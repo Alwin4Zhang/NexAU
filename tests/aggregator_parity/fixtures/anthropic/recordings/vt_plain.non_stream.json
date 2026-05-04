@@ -1,0 +1,28 @@
+{
+  "model": "anthropic/claude-haiku-4.5",
+  "id": "88988e897c2d43dcb2dd7eb4bd64e088",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "# Three Colors\n\n**Blue** - The color of the sky on a clear day.\n\n**Red** - A warm color often associated with passion and energy.\n\n**Green** - The color of grass and leaves in nature."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 18,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 50,
+    "server_tool_use": {
+      "web_fetch_requests": 0,
+      "web_search_requests": 0
+    }
+  }
+}

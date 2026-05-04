@@ -4,6 +4,23 @@ RFC-0003: Gemini REST 流式事件聚合器
 
 Processes Gemini REST API streaming chunks (plain dicts) and emits
 unified START → CONTENT → END events for the transport layer.
+
+⚠️ PARITY PROTOCOL: This module has a twin in
+``nexau/archs/main_sub/execution/llm_caller.py`` (``GeminiRestStreamAggregator``)
+that MUST stay in lock-step until RFC-0023 §阶段 ③ retires the twin.
+Any change to this module's parsing or emission logic requires:
+
+1. Run ``uv run pytest tests/aggregator_parity/`` before commit.
+2. If your change handles a new wire pattern (new part type / new
+   thoughtSignature shape / new function call wire format), record a
+   fixture via ``tests/aggregator_parity/scripts/record_fixture.py``.
+3. If parity surfaces a divergence, fix the buggy side rather than xfail
+   — real Set A↔Set B drift = real production bug. The harness has
+   already caught a block-ordering bug here (thinking → tool transition
+   produced wrong block order — fixed in 16288c5c via
+   ``_close_thinking_if_open``).
+
+See ``tests/aggregator_parity/README.md`` for the full protocol.
 """
 
 from __future__ import annotations
@@ -130,6 +147,25 @@ class GeminiRestEventAggregator:
                 )
             )
 
+    def _close_thinking_if_open(self) -> None:
+        """Emit ThinkingTextMessageEnd if a thinking block is open.
+
+        Called when transitioning from a thinking part to a non-thinking
+        part (text or tool call) within the same response. Without this,
+        block ordering downstream (e.g. via the parity-test reconstructor
+        or any other Start/End-driven aggregator) produces blocks in
+        End-event order rather than wire order — putting tool/text BEFORE
+        reasoning when the wire ordered them reasoning-then-tool/text.
+        """
+        if self._thinking_started and not self._thinking_ended:
+            self._thinking_ended = True
+            self._on_event(
+                ThinkingTextMessageEndEvent(
+                    timestamp=int(datetime.now().timestamp() * 1000),
+                    thinking_message_id=self._thinking_message_id,
+                )
+            )
+
     def _handle_text_part(self, part: dict[str, object]) -> None:
         """Emit text content events for a non-thinking text part."""
         text = part.get("text")
@@ -137,6 +173,10 @@ class GeminiRestEventAggregator:
             return
 
         self._ensure_message_started()
+        # Close any open thinking block first so block ordering is preserved
+        # downstream (wire order: thinking → text means End thinking before
+        # opening text).
+        self._close_thinking_if_open()
         self._text_started = True
 
         self._on_event(
@@ -193,6 +233,9 @@ class GeminiRestEventAggregator:
         args = cast(dict[str, object], args_raw) if isinstance(args_raw, dict) else {}
 
         self._ensure_message_started()
+        # Close any open thinking block first so the tool block ordering
+        # downstream matches wire order (thinking → tool, not tool → thinking).
+        self._close_thinking_if_open()
 
         tool_call_id = f"gemini_tc_{self._tool_call_count}"
         self._tool_call_count += 1

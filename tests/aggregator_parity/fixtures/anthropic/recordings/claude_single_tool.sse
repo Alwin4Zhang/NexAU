@@ -1,0 +1,48 @@
+event: message_start
+data: {"type":"message_start","message":{"type":"message","model":"claude-sonnet-4-5-20250929","usage":{"input_tokens":566,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1,"server_tool_use":null},"role":"assistant","id":"8f0cf79391e542a8bd5e59cca09b19d6","content":[]}}
+
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_bdrk_01HVaDhghN4mRFeUHpB1BPof","name":"get_weather","input":{}}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"lo"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"cation"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\": "}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"Beij"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"ing"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"}"}}
+
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":566,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":53}}
+
+
+event: message_stop
+data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":566,"outputTokenCount":53,"invocationLatency":1931,"firstByteLatency":1464}}
+
+

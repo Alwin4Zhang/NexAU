@@ -1,3 +1,27 @@
+"""OpenAI Chat Completions stream aggregator.
+
+Aggregates OpenAI ``ChatCompletionChunk`` events into a complete
+``ChatCompletion`` plus emits unified Event objects. Handles canonical
+OpenAI wire format plus extension fields used by OpenRouter / DeepSeek /
+Qwen / vLLM (``reasoning_content`` flat, ``reasoning_details`` structured,
+``reasoning`` flat — all routed through ``_extract_reasoning_delta``).
+
+⚠️ PARITY PROTOCOL: This module has a twin in
+``nexau/archs/main_sub/execution/llm_caller.py``
+(``OpenAIChatStreamAggregator``) that MUST stay in lock-step until
+RFC-0023 §阶段 ③ retires the twin. Any change to this module's parsing
+or emission logic requires:
+
+1. Run ``uv run pytest tests/aggregator_parity/`` before commit.
+2. If your change handles a new wire pattern (new field / event type /
+   provider extension), record a fixture via
+   ``tests/aggregator_parity/scripts/record_fixture.py``.
+3. If parity surfaces a divergence, fix the buggy side rather than xfail
+   — real Set A↔Set B drift = real production bug.
+
+See ``tests/aggregator_parity/README.md`` for the full protocol.
+"""
+
 from __future__ import annotations
 
 import json

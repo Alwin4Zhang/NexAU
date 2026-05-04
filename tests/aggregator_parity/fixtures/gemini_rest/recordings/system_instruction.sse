@@ -1,0 +1,2 @@
+data: {"candidates": [{"content": {"parts": [{"text": "Rome"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 8,"candidatesTokenCount": 1,"totalTokenCount": 26,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 8}],"thoughtsTokenCount": 17},"modelVersion": "gemini-2.5-flash","responseId": "a9X2abCqDM26_uMPkbSqgAk"}
+

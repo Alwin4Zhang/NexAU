@@ -1,0 +1,53 @@
+{
+  "id": "gen-1777791465-CXhSEBYTosms1kzce6RI",
+  "object": "chat.completion",
+  "created": 1777791465,
+  "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning-20260428:free",
+  "provider": "Nvidia",
+  "system_fingerprint": null,
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "length",
+      "native_finish_reason": "length",
+      "message": {
+        "role": "assistant",
+        "content": "17 × 23 = (10 + 7) × 23 = 230 + 391",
+        "refusal": null,
+        "reasoning": "We need to show reasoning briefly.\n\nFirst, analyze the question: \"What is 17 * 23? Show your reasoning briefly.\"\n\nThis is a math question. 17 * 23.\nCalculation: 17 * 20 = 340. 17 * 3 = 51. 340 + 51 = 391.\nOr 17 * 23 = (20 - 3) * 23 = 460 - 11 = 391.\nOr 17 * 23 = 17 * (25 - 2) = 425.5 - 34*17 = 42.5 - 51 = -8.5? Let's do standard multiplication:\n  23\nx 17\n----\n 161 (7*23)\n 230 (10*2*2? No 10*23=230)\n----\n391\n\nSo the answer is 391.\n\nThe user asks to \"Show your reasoning briefly.\" So I need to state the calculation.\n\nBut wait, is this a trick? Is 17 * 23 referring to something else? No, it's standard multiplication.\n\nWe need to compute 17 * 23. That's 391. Provide brief reasoning: 10*23=230, 7*23=391, sum 391. Or use (20-3)*23 = 460-69=391. Provide brief reasoning.\n\nAnswer: 391.\n",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "We need to show reasoning briefly.\n\nFirst, analyze the question: \"What is 17 * 23? Show your reasoning briefly.\"\n\nThis is a math question. 17 * 23.\nCalculation: 17 * 20 = 340. 17 * 3 = 51. 340 + 51 = 391.\nOr 17 * 23 = (20 - 3) * 23 = 460 - 11 = 391.\nOr 17 * 23 = 17 * (25 - 2) = 425.5 - 34*17 = 42.5 - 51 = -8.5? Let's do standard multiplication:\n  23\nx 17\n----\n 161 (7*23)\n 230 (10*2*2? No 10*23=230)\n----\n391\n\nSo the answer is 391.\n\nThe user asks to \"Show your reasoning briefly.\" So I need to state the calculation.\n\nBut wait, is this a trick? Is 17 * 23 referring to something else? No, it's standard multiplication.\n\nWe need to compute 17 * 23. That's 391. Provide brief reasoning: 10*23=230, 7*23=391, sum 391. Or use (20-3)*23 = 460-69=391. Provide brief reasoning.\n\nAnswer: 391.\n",
+            "format": "unknown",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 31,
+    "completion_tokens": 400,
+    "total_tokens": 431,
+    "cost": 0,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 0,
+      "upstream_inference_prompt_cost": 0,
+      "upstream_inference_completions_cost": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 216,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

@@ -1,0 +1,6 @@
+data: {"id":"foaicmpl-57d924ae-f96f-4693-bec1-dde1cc242e0b","object":"chat.completion.chunk","created":1777770586,"model":"gpt-5.4","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_EF4UKg2Ru1HWihLcVR1kzgA7","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Beijing\"}"},"index":0}]},"finish_reason":null}]}
+
+data: {"id":"foaicmpl-57d924ae-f96f-4693-bec1-dde1cc242e0b","object":"chat.completion.chunk","created":1777770586,"model":"gpt-5.4","system_fingerprint":"","choices":[],"usage":{"prompt_tokens":48,"completion_tokens":15,"total_tokens":56,"prompt_tokens_details":{"cached_tokens":0,"text_tokens":0,"audio_tokens":0,"image_tokens":0},"completion_tokens_details":{"text_tokens":0,"audio_tokens":0,"reasoning_tokens":0},"input_tokens":0,"output_tokens":0,"input_tokens_details":null,"claude_cache_creation_5_m_tokens":0,"claude_cache_creation_1_h_tokens":0}}
+
+data: [DONE]
+

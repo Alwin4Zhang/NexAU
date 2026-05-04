@@ -402,6 +402,17 @@ def test_anthropic_parity(fixture_path: Path):
 **强等价**(必须断言):role / content blocks(数量 / 顺序 / 类型 / 字段)。
 **弱等价**(记录 gap):usage / stop_reason / model_name / signature / redacted_data。
 
+**第三轴 — Vendor Truth 等价**:
+
+Set A vs Set B 互相一致是必要但**不充分**的。两者可能"一起错"——都和 vendor 自己在非流式调用下的 aggregation 不一致。这条风险的具体表现是 **prompt cache 命中率**:聚合后的 assistant `Message` 在下一轮(history compaction、multi-turn tool loop、agent-of-agent)被回放给 vendor 时,字节形态必须和 vendor 本身在 non-stream 调用下产生的 response 一致——否则 prompt cache prefix 失配,延迟 / 成本静默回退,没有任何测试会发现。
+
+为此 §阶段 ① 在同一个目录下补:
+
+- `scripts/record_fixture.py --also-non-stream`:录 SSE 的同时,用同样 prompt 再发一次 `stream:false` 请求,落 `<scenario>.non_stream.json` 到 `recordings/` 目录;Anthropic / OpenAI Chat / OpenAI Responses 通过 body 的 `stream:false` 切换,Gemini 通过 path 切换 (`streamGenerateContent` → `generateContent`)。
+- `tests/aggregator_parity/test_stream_vs_non_stream.py`:自动发现任意 `<scenario>.sse` + `<scenario>.non_stream.json` 配对,SSE 喂 Set A → reconstructor → `Message`,non-stream JSON 走 `<provider>_non_stream_json_to_message` → `Message`,断言强等价。
+- 真正的 vendor-side 设计差异(不是 bug 是设计取舍)登记进 `KNOWN_VENDOR_TRUTH_DIVERGENCES`,需要书面理由,strict xfail。
+
+
 **输出物**:阶段 ① merge 后,`pytest tests/aggregator_parity/` 全绿,`tests/aggregator_parity/gap_report.md` 列出当前 Set A 缺的字段——这份报告是阶段 ② 的输入。
 
 **安全网作用**:阶段 ② 改了 Set A 的输出后,parity test 会立即检测到强等价是否仍然成立;阶段 ③ 删掉 Set B 后,parity test 自动转换为"内部一致性测试"(因为只剩一套 aggregator,parity 自动满足)。
@@ -434,6 +445,15 @@ def test_anthropic_parity(fixture_path: Path):
 
 **Anthropic 合并后预估 ~500 行**(Set A 当前 318 + Set B 当前 ~290,合并去重后估计减少 30%)。其他 provider 类似比例。
 
+**§阶段 ③ merge 验收门(Acceptance Criteria)**:
+
+合并 PR-C 之前,以下三轴必须全绿——任何一轴红灯都说明 Set B 的某种行为在 Set A 上没有等价覆盖,贸然删除会引入回归。
+
+1. **Set A vs Set B 强等价**(阶段 ① 主断言):`pytest tests/aggregator_parity/test_*_parity.py` 0 strong failure;0 weak gap(阶段 ② 应已全部关闭,残留意味着 §阶段 ② 没收尾)。
+2. **Set A vs Vendor Non-Stream 强等价**(阶段 ① 第三轴):`pytest tests/aggregator_parity/test_stream_vs_non_stream.py` 0 strong failure;`KNOWN_VENDOR_TRUTH_DIVERGENCES` 中的每条 entry 都必须有书面理由 + strict xfail,Reviewer 显式签字承认每条 divergence 是设计取舍而非 bug。
+3. **Vendor truth fixture 覆盖广度**:每个 provider 至少有 ≥ 3 条 `<scenario>.non_stream.json` 配对,覆盖 plain text / tool call / reasoning(及 redacted reasoning,如该 provider 支持)三个典型场景;否则 §阶段 ③ 等于在没有 ground truth 的情况下盲删。
+
+
 **RFC-0022 Phase 2 解锁**:阶段 ③ merge 后,`AgentRunner` 可在每个 LLM iter 完成时,从同一个 aggregator 直接拿 ModelResponse → Message → APPEND,实现 iter 级持久化。
 
 ## 权衡取舍
@@ -464,6 +484,7 @@ def test_anthropic_parity(fixture_path: Path):
   - 录制 4 provider × 5 场景 = 20 条 fixture
   - 4 个 parity test 文件(强等价 + 弱等价 gap 报告)
   - `gap_report.md` 输出
+  - **第三轴**:`scripts/record_fixture.py --also-non-stream`(4 provider 全覆盖)+ `test_stream_vs_non_stream.py` + `NON_STREAM_LOADERS` + `KNOWN_VENDOR_TRUTH_DIVERGENCES` 注册表(空表合并,后续 fixture 录制后填充);录制目标 4 provider × ≥3 场景 = ≥12 条 `<scenario>.non_stream.json` 配对
 - [ ] **阶段 ② — AG-UI events 缺口补齐(PR-B)**
   - 新增 `LLMCallMetadataEvent`、扩展 `ThinkingTextMessage*` 字段
   - 4 provider Set A aggregator emit 新 events

@@ -1,0 +1,2 @@
+data: {"candidates": [{"content": {"parts": [{"text": "Red"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 264,"candidatesTokenCount": 1,"totalTokenCount": 341,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 6},{"modality": "IMAGE","tokenCount": 258}],"thoughtsTokenCount": 76},"modelVersion": "gemini-2.5-flash","responseId": "aNX2aZyPMfmY9MoPk8K44AI"}
+

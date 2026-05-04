@@ -1,0 +1,24 @@
+{
+  "id": "foaicmpl-56026075-07cc-4efb-b4e6-1a7870565272",
+  "object": "chat.completion",
+  "created": 1777791640,
+  "model": "gpt-5.2",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "- Red: A bold, attention-grabbing color often linked to passion.\n- Blue: A calm, cool color that evokes trust and stability.\n- Green: A fresh, natural color commonly associated with growth."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 4365,
+    "completion_tokens": 46,
+    "total_tokens": 4411,
+    "prompt_tokens_details": {
+      "cached_tokens": 4224
+    }
+  }
+}

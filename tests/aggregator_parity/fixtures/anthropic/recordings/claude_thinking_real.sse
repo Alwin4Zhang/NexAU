@@ -1,0 +1,128 @@
+event: message_start
+data: {"type":"message_start","message":{"type":"message","model":"claude-sonnet-4-6","usage":{"input_tokens":47,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1,"server_tool_use":null},"role":"assistant","id":"5985ac56369e4f9fb0a33428d4de2c46","content":[]}}
+
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"7"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"*"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"8 = 56"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"ErIBCkgIDRABGAIqQD2rDBN8RDScW0HEoLgpbA3RvTNoYDE6M7qg3VV5gqPSu3r2mafHFALQ7ARwpetnzEWWH6MVtXBf33FCFw1hjQUSDL1yFSg1nSY+97gX0RoM1woZIeTBmHk0v/4LIjC/W67VKXqLm9zMxocLvTUOXt1dYfC7B8OJomrv8cIaLbssOLwtPrQosu+TFEnUDOcqGFIhRGamj15D0p3HQNhNNEZDBeiWDmjw1hgB"}}
+
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"##"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 7 × 8 ="}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" **"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"56**\n\n**"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Why"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"?"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"**"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" Multiplication is repeated"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" addition,"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" so "}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"7 × 8 means"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" adding 7 eight"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" times:"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n7"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" +"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 7 + 7 +"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 7 + 7 +"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 7 + 7 +"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 7 = **"}}
+
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"56**"}}
+
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":47,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":92}}
+
+
+event: message_stop
+data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":47,"outputTokenCount":92,"invocationLatency":1879,"firstByteLatency":780}}
+
+

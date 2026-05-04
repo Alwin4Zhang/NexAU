@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "Hi there"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 3,"candidatesTokenCount": 2,"totalTokenCount": 5,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 3}]},"modelVersion": "gemini-3.1-flash-lite-preview","responseId": "ZNX2ab3lCY26jMcPy7WloQ8"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "!"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 3,"candidatesTokenCount": 3,"totalTokenCount": 6,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 3}]},"modelVersion": "gemini-3.1-flash-lite-preview","responseId": "ZNX2ab3lCY26jMcPy7WloQ8"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EjQKMgEMOdbH0jX62uxU4lESzZIUxVIBF3ABUQ5iTzTAGy5HM4TEV+lCsT/3SkIddFdgsHDN"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 3,"candidatesTokenCount": 3,"totalTokenCount": 6,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 3}]},"modelVersion": "gemini-3.1-flash-lite-preview","responseId": "ZNX2ab3lCY26jMcPy7WloQ8"}
+

@@ -1,0 +1,32 @@
+{
+  "id": "foaicmpl-623a1f42-a05c-4a69-a640-43a5951bf01e",
+  "object": "chat.completion",
+  "created": 1777791659,
+  "model": "gpt-5.2",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Fetching current Tokyo weather via the provided tool.",
+        "tool_calls": [
+          {
+            "id": "call_Ekasm11SHtMI7enoYugG0lb9",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\":\"Tokyo\"}"
+            },
+            "index": 0
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 4479,
+    "completion_tokens": 34,
+    "total_tokens": 4513
+  }
+}

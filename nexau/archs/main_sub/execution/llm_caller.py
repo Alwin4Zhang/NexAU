@@ -2295,6 +2295,40 @@ def _enrich_gemini_trace_outputs(
     return enriched
 
 
+# ============================================================================
+# ⚠️ PARITY PROTOCOL — Stream aggregators below
+# ============================================================================
+#
+# The four ``*StreamAggregator`` classes below (OpenAIChatStreamAggregator,
+# AnthropicStreamAggregator, OpenAIResponsesStreamAggregator,
+# GeminiRestStreamAggregator) each have a TWIN in
+# ``nexau/archs/llm/llm_aggregators/<provider>/`` that parses the same
+# wire format and produces unified Event objects for the agent events
+# middleware. Both must stay in lock-step until RFC-0023 §阶段 ③
+# retires this entire section.
+#
+# Any change to any aggregator below requires:
+#
+# 1. Run ``uv run pytest tests/aggregator_parity/`` before commit.
+# 2. If your change handles a new wire pattern (new field / event /
+#    block / extension), record a fixture via
+#    ``tests/aggregator_parity/scripts/record_fixture.py``.
+# 3. If parity surfaces a divergence, fix the buggy side rather than
+#    xfail — real Set A↔Set B drift = real production bug visible to
+#    end users (live SSE vs persisted history mismatch).
+#
+# The parity harness has caught 5 production bugs that would otherwise
+# have shipped silently. See ``tests/aggregator_parity/README.md`` for
+# the protocol and the cross-validation against OSS prior art (vLLM,
+# JetBrains/koog, Spring AI, LiteLLM all hit the same class of bugs).
+#
+# After RFC-0023 §阶段 ③ merges, these classes will be deleted and
+# their accumulator state absorbed into the corresponding Set A
+# aggregators. Until then: lock-step.
+#
+# ============================================================================
+
+
 class OpenAIChatStreamAggregator:
     """Aggregate OpenAI chat completion stream chunks into a final message dict."""
 

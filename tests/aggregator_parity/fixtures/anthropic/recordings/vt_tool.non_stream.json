@@ -1,0 +1,32 @@
+{
+  "model": "anthropic/claude-haiku-4.5",
+  "id": "c9d99f8ea3a54947949c81ccdb989653",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_bdrk_01Bo5VtGtrhfXVPUURxbacpQ",
+      "name": "get_weather",
+      "input": {
+        "location": "Tokyo"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 570,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 54,
+    "server_tool_use": {
+      "web_fetch_requests": 0,
+      "web_search_requests": 0
+    }
+  }
+}

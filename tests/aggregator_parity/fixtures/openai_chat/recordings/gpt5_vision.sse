@@ -1,0 +1,6 @@
+data: {"id":"foaicmpl-ee1fb9bb-7690-44a5-860c-a3cea3e427b7","object":"chat.completion.chunk","created":1777771257,"model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"Red"},"finish_reason":null}]}
+
+data: {"id":"foaicmpl-ee1fb9bb-7690-44a5-860c-a3cea3e427b7","object":"chat.completion.chunk","created":1777771257,"model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4366,"completion_tokens":5,"total_tokens":4371}}
+
+data: [DONE]
+

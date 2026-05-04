@@ -2,6 +2,24 @@
 
 Converts raw RawMessageStreamEvent objects from client.messages.create(stream=True)
 into unified Event objects for the agent events middleware pipeline.
+
+⚠️ PARITY PROTOCOL: This module has a twin in
+``nexau/archs/main_sub/execution/llm_caller.py`` (``AnthropicStreamAggregator``)
+that parses the same wire format and MUST stay in lock-step until
+RFC-0023 §阶段 ③ retires the twin. Any change to this module's parsing or
+emission logic requires:
+
+1. Run ``uv run pytest tests/aggregator_parity/`` before commit.
+2. If your change handles a new wire pattern (new event / block / field
+   type), record a fixture via
+   ``tests/aggregator_parity/scripts/record_fixture.py``.
+3. If parity surfaces a divergence, fix the buggy side rather than
+   xfail — real Set A↔Set B drift = real production bug visible to
+   end users (live SSE vs persisted history).
+
+See ``tests/aggregator_parity/README.md`` for the full protocol.
+This harness has caught 3+ production bugs that would otherwise have
+shipped silently.
 """
 
 from __future__ import annotations
@@ -242,8 +260,24 @@ class AnthropicEventAggregator(Aggregator[RawMessageStreamEvent, None]):
                     return
                 thinking_id = self._thinking_ids.get(idx)
                 if not thinking_id:
-                    _logger.warning("Received thinking_delta for unknown thinking block at index %d", idx)
-                    return
+                    # Eager streaming / wire pathology: thinking_delta arrived
+                    # before any content_block_start. Mirror Set B's
+                    # AnthropicStreamAggregator behavior — lazily synthesize a
+                    # thinking block here so the delta isn't silently dropped.
+                    # Same pattern as InputJSONDelta's _pending_tool_deltas
+                    # buffering, but for thinking we don't need to buffer
+                    # because we have no id/name to wait for.
+                    thinking_id = str(uuid.uuid4())
+                    self._thinking_ids[idx] = thinking_id
+                    self._block_types[idx] = "thinking"
+                    self._on_event(
+                        ThinkingTextMessageStartEvent(
+                            parent_message_id=self._message_id,
+                            thinking_message_id=thinking_id,
+                            run_id=self._run_id,
+                            timestamp=self._ts(),
+                        )
+                    )
                 self._on_event(
                     ThinkingTextMessageContentEvent(
                         thinking_message_id=thinking_id,

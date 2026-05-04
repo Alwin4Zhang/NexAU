@@ -76,6 +76,88 @@ make mypy-coverage
 # Reports saved to: mypy_reports/type_html/index.html
 ```
 
+## Aggregator parity protocol(LLM stream aggregators)
+
+NexAU currently maintains **two parallel implementations** of LLM stream
+aggregation per provider, and they MUST stay in lock-step until RFC-0023
+§阶段 ③ retires the second set:
+
+| Set | Path | Output |
+|-----|-----|--------|
+| Set A | `nexau/archs/llm/llm_aggregators/<provider>/` | unified Event objects (push to UI via SSE) |
+| Set B | `nexau/archs/main_sub/execution/llm_caller.py` `*StreamAggregator` classes | ModelResponse dict (persist to history) |
+
+**Every LLM call goes through both** — they parse the same provider SSE
+stream independently. Drift between them causes user-visible bugs:
+the live SSE shows one thing, but the persisted message history shows
+another.
+
+### When to engage the parity harness
+
+You MUST run `uv run pytest tests/aggregator_parity/` before commit if
+your change touches:
+
+- Any file under `nexau/archs/llm/llm_aggregators/{anthropic,openai_chat_completion,openai_responses,gemini_rest}/`
+- Any `*StreamAggregator` class in `nexau/archs/main_sub/execution/llm_caller.py`
+- The `Aggregator` ABC or its `Event` union in `llm_aggregators/events.py`
+
+If parity surfaces a divergence:
+
+1. **First instinct: fix the buggy side, do NOT just xfail.** Real Set
+   A ↔ Set B drift = real production bug. The harness has already
+   caught 5 such bugs that would otherwise have shipped silently
+   (see `docs/development/case-studies/2026-05-02-aggregator-parity-harness.md`).
+2. If the divergence requires a design decision (e.g. server_tool_use
+   shape), THEN xfail with a detailed reason in
+   `KNOWN_DIVERGENT_FIXTURES` and open a follow-up issue / RFC.
+3. Run the existing aggregator unit tests
+   (`tests/unit/test_*_aggregator.py`) too — those still need to pass.
+
+### When to record a new fixture
+
+Add a recording when your change handles a new wire pattern:
+
+- New event type / block type / part type emitted by a provider
+- New extension field (e.g. OpenRouter `reasoning_details`, Anthropic
+  `thoughtSignature`, Gemini `inlineData`)
+- New tool-result variant (e.g. Anthropic `web_search_tool_result`)
+- New error / refusal / cancellation pattern
+
+Use the recording script (no manual curl):
+
+```bash
+export NEXAU_PARITY_BASE_URL="https://your-gateway.example.com"
+export NEXAU_PARITY_API_KEY="sk-..."   # never written to any file
+
+python tests/aggregator_parity/scripts/record_fixture.py \
+    --provider anthropic --model claude-sonnet-4-5-20250929 \
+    --scenario my_new_scenario \
+    --prompt "your test prompt"
+```
+
+The script handles SSE streaming, redaction, key-leak scanning, and
+fixture path conventions. After it runs, register the new fixture in
+`tests/aggregator_parity/fixtures/<provider>/__init__.py`.
+
+### Why this matters
+
+The parity harness has caught 3 production bugs and 2 test-infrastructure
+bugs that all map onto industry-wide LLM streaming pathology:
+
+- **Anthropic orphan `thinking_delta`** — same class of bug as Spring
+  AI #4407 / LiteLLM #25321
+- **OpenAI Responses silent reasoning** — same as koog #1264 /
+  multiple OpenAI Community threads
+- **`reasoning_content` vs `reasoning` vs `reasoning_details` fragmentation** —
+  vLLM RFC-27755 confirmed industry-wide
+- **Gemini block-ordering on thinking → tool transition** — fixed by
+  closing thinking before opening next block
+
+Skipping the parity harness means re-discovering these bugs the hard
+way (production user reports). See
+`tests/aggregator_parity/README.md` for full documentation including
+the cross-validation table.
+
 ## Type Safety Guidelines
 
 This section documents the **mandatory type safety coding standards** that apply across the codebase, especially in `llm_aggregators` module. These rules establish a strict type safety culture.

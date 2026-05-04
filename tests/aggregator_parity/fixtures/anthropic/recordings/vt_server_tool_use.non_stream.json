@@ -1,0 +1,183 @@
+{
+  "model": "anthropic/claude-sonnet-4.5",
+  "id": "783f22f17655407cb2ead174e122c7a1",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_015b8xfWKeCE2qEWqfWWYR6C",
+      "name": "web_search",
+      "input": {
+        "query": "Python latest version 2025"
+      }
+    },
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srvtoolu_015b8xfWKeCE2qEWqfWWYR6C",
+      "content": [
+        {
+          "type": "web_search_result",
+          "title": "Download Python | Python.org",
+          "url": "https://www.python.org/downloads/",
+          "encrypted_content": "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",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Status of Python versions",
+          "url": "https://devguide.python.org/versions/",
+          "encrypted_content": "Et8ECioIDxgCIiRjOTUyM2NjMi1iZTkyLTQ1YmUtYWU3My02Y2Q0NjlkMzMxMDYSDJlBbiT92loFwc3O9hoMX0XX/dSB0sqvPRH4IjAeRSGC6xAinKIrYRmgqLSbghrf9rCiRaatQpcxk7WkbeaaRfJ5mypMAopo4oe0XL8q4gOLT/TKoJRkrf/GvQ2m7WDGplEjXE42yLpVWIzSW/GEOqwKZtCyahgOFOHemORc8LdnZ8ThDEHdzsRiXpI3503PbmfOyullGD5mzgYhtgCbYk5UXj+0r7ffu33V320Bolu0Ql9M5N/0IUjVUNlQ7VnGKfTx5cYv64Byk6j6uP17QCrE8h/P6zwIGHenbNPSxuXG21HlJKbF7R166QC+SKj49UzHHEdHh5Z+yPWkE3HGVIvu92rdFLloA7rF2OGhdr7iGY9A3h2c5zStM/1o8Jui08AZRcxRwgILpdcD/WPIzCkLheZEbTT4LDdLouq9cJePj5QHErmL113PfoI4GnfnAQtxXO5GzGSuS787FzpRwB3X/8WGsq8lPql7eytzZsBIREYtOw5t789NCjo8R5eFzy3AIEZRSmjc2DCzMFV8IOFZV84K70Dozo5xCURafJZeq9NiVnRaU3NrXxzsrG7D/K/5EPaAAi+PbV60e3ueYLhh0gUyITSP9B2GNgdPbNJwF4zpZxrba6R6LnNlip3zp8NwNWC9eV8uJm9AY+PjfKnUgc+MJgiA2XT1wd+K+pMYisxSvIKYebJ5d6HJkwFt4r1mq6rHCv66xxqkBq5UQzVZ9a/3y0nUj/OK1hXmi3KvJBgD",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Python documentation by version | Python.org",
+          "url": "https://www.python.org/doc/versions/",
+          "encrypted_content": "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",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Latest Python Version (2025) – What's New in Python 3.14?",
+          "url": "https://www.liquidweb.com/blog/latest-python-version/",
+          "encrypted_content": "EuAXCioIDxgCIiRjOTUyM2NjMi1iZTkyLTQ1YmUtYWU3My02Y2Q0NjlkMzMxMDYSDJU7AvUiwhbQLHKYXBoM5puTH48sKcdtrzLTIjBIll6fO+Exmjiifu1q4ELz/oCedHmnTObJIcHmh22Lt39E+J2jorlBBLVBqiIQvC0q4xabll8eURbJMWgEIXA+7l7r4uqdGephmABQrOTWH99oVQ+I+NeCPI9s1qYaWuMENuiQHJal3jaVTpt84mUUeRMswMcnFU2VICJdBIRFc5NE7/l6hq/Hpk4fLXu6lfeOXDCEGAM/H5DybnrzScz/scd4+S05MyZADVizh3oymEeLBE0nz5Lx/jcMri8KWqZnPdnA30q5as0fGAlmDaM9vuWYQ93aL1gboFltP6QwUGQ2jOfD0ZG+3RMlU57Cl8uiDHzdFiHErsiaVgKjF9oiZjgpjcwoAVQQwSQsxxFoWIRr9txQMdFdUAFrlch7lVmURA0Hvr62GhfnGfl9Dv/Pd3jR7p5Jlu3Axk0g5gTBN8MxCr604lC0pf/TWAXLasKi+iviy/w94QFB+Y89aleqPFWXxT/fiBGkFy9QbzxLSPRXUrKWv7IEES5Pm5FaWG9bhN7w6m/3lWseBP6dVIm2wtTnt4rQd4EZzXCwslBNzkEjYgYKqrB4R/9/4K7ZhV0IVI4m2muTgM8KS2kAMJ8/Pey8MpQcD3kYgAM2+4N41dNK+3nhOBBzGz9r0Gj735iWE7FF2SqBIZyl5IWJko+cDtFwZuMFH3QFfmLdD6El5BKQzETTL0d9rSI3i97T049kQegMKXBWXdoNcSVfWc4/dl9yH1rO9riIgrWu7N+mvrsesudyvYVTe71+L2av+6ZLvh+yqW+kjwPgNuiCcsA109G7+voOFGPxualEOfcdAkikhtnKWEoaOAtFuPUsDeUhENwEcorycfbQvO1SJYekLPD0QIk/gaRLt2gSvNRqnVRJwzrfEYKFvqY9ym73PThiD9dIHzewPaOZI6AhpAmto+cDnPSn4VJCc3/IgoKIqzRSYOXeGbRNcXa4LjawVv9Bc53qLjGSBl/6XICMFe3C57OGIQkpB8IzXqllGZHkICffd66kI2JlGJz7l0ec85tkQhSLkmnnN8M3RezYPjkxtQL5bQ/NhrsrMqEeYYikUaa3XIbxqbAw7aaYWj18DEQ0/yK3cLZ0N74BqGibkUW93cwmznca2bZjPkEPPFJTOGnr68putk6QIgsVcRkwMgaMoMBWMqtZNscD8iWJn1kkpMACnl+NzqnmTohPcEJBmRJcUlTxzwf8UD2UqI3b6knTliLfXcITQcNFCuqvsfLpjXoyLLhmyVV+RLia6QA2UCVc4XGj6lYSazU2b7XjKweKrKH0XPTa6H5Mp/rU3j4y4Gq0yRPxVW0MHc1w5bp7y/C2POqDDSr30XF5gJEhKzownbj8P95n2sNduR3c9xVwb/tM+VFkT+NUqQ9kLH1UawvonsfxRL+L5cx2vW/WMOnLZrUlsFLdqtR0MgIFwII68QYHZ+E/gSOSLm86gRYPcvpC3A53MUTOixf5XH5zLRg3Y7KbElcnO/jcKsuBYyj5L6U4U2sIdRNs0qBxLhEv/V3gb2LrW5k0UPYXFbVf6DT/S7k+xblrSjXK/ZGhlRn1GTffaEJ3C2dxMfgAqGjNVvIvtOA3fxnDzAJE3zrUBaVYb9A2q5McQwEacT0f9gpOgwChbsO2dXB6nGZX0uofrui8HzkZZ6O0LiEirelARVSZahWR1HU0LcHDENUc8Qkw4MBqe1vwcRoz5rKX/v9pEozxJYjIDOslaWV6rxOcMAlTmEe0wUPkuos2f2VC6g7G9Y6SOUhbt2C88/WfWUByqfiJVtCV8JbvbKq3FPf8qg7e/MjB2ElB66t92ND/7Kq55t52b2ANR545wrSsI8274Pmsz0bn2l8pF73fxCqjmmSy5ABhJ5U9VbhqdmRJjtAeXyacwc1dmsn2MIMdNQCnj26G9QqM7QTrm7FaPcbiR6ZLL984cEW0GNwtHoqt3JaQ+w3ZstvXXNFyyyNs+ACBm5t0vnacBPsjXQRy9acMCFcT+y02Lj0aEk51HRWsSf+LNG6bzOO4PpAijCJzb3BPEHTbGf31piaRkZqPLAOVFCpal+tTab+lOOgQmOBKJQYRTkdQq8kpw+sOFfLyHz0E+jbFMvcku/w5KTXa90bX4dYxb+ROOMkepn6B+guRFM/HvwnoWqA5qLQM8fWWH+wHpW45jzkbD8kRlYSDi3uyFe8gqbe27D4GzAhvZO5dQ6nnM2hpqYDrWXeJe2HJemeAVAfUK6bsZKzNzXgHlwWCyigBj380PDXOqRPOgmvwluUF/h3bwExneyuYkFq0K4Ke31NV2JPjgxFHzpShvFZEo91vD782Seav5dUMHfiltW0CN3y6Ri16CeArasl+g29hh7pQ5pTI7Rg+PYxGUEZuGPbtUjzuw1i8tBYHZnO88LeEfQxxdJn9rFISqiZ/g3dfLny/cDZI6ByfA9Vu3K74bH45L7k1UqpwWAJB3j5WpF+nMqGYNarHnjnlVFoCa/Usd8/kvjcWm3NNz9VGaDiPfCA+w0xvtsjjX556Vl5w2bfAZBErU/xubBU7ENYsLafW6FaHovERYuMXiJJG3eH+PuNy2OGSH9zvgfxlu7C8Ia1iABwQoC8e5rQboGyY8fBQARizjituZtpkoLCgOUpGxUz3tx00qX9HJTISKiy3AEmEPmC6mmp+mQvrcxu0OIC1+IT8TjT1yLWZcFNVEf06HwcTTtxQGNiS9GHZYdRkSa2DxXeUHhDNi1PUtHmrc3Y3iTftK9Sh4hV2GtPCD4DLMSwK7V+Fg1l/ZYGfpB6kBI+eMQ/7R9MghCny+PyDQhphaSSAZy3kvTsC59D8N0R5HZ/GfV0zO91zoL6O0ACcqWRYZtVcItpAZRKszgCc37/sgZdTOQQYa55X1CJgqoA46gDuXgJ53p5KRMJzDOPYoSfXuYf7r3i0BJrih8heARhBvZssWpp7lOLDIc2cXfuX7xKzZ78j1auxb6Ah5RzY8PTcaCcNkXUVr+3R7u4qneKx6VsnSTzn+sfo0svjadxT1Evb+2IMyEqxoqD4nzKpd7NpUsB9EA8GmCHXhvF9S8IYbs6EtEGLyGKWwOQqnIO1Iu/hyd9KTzTBegzltqwf/w2QZU68yI+I/K5A+O4ir6IwA8lNVQ5Sqis8aT4Lie616nFuXzGuvTlLHTEUdapB6kwWSrBzB1+7JV7IBTk1//kqq7nmTSZadlGYmaiehWlIeoLGx98MIw11uQHjmT/TOyPi18JnPjHvRijwj6XcV5/qUCmlmmCY6/ZBy/erftF35j/9iajxMOsSFKw373XswbZUJqmYfXOUze7Msc2Au4eBXhQOoTP7vtALAQY+q2PAOp+2I2wJ7nINFQs9n0dmu4GKOIfgaCWY4nT36mcUlLp8l/qGO5WG5plzdTdIeuggYKej/Xew2bkaoY59QKAbAbYxEW3qw9IOlVfU0/sBbU/geqq3gNg91xnkBjWGNzj41+VASxGc+m7if0cHgdIk+FuKnZElZvNPaznHLQzrRWDiO6okVNviSx9yqEJ5eo3MK0CwZjkvi7cwj5HrXpzTvKTpHHDNyrw9PZM9IyH5sQ7ewfD00k9qqeb4m1h3jc0r30SIEe8sbozZXZhpofUQG5KInFZx29YAc40KQJmeyDHS+PcfiyKFM5iXkMLdf2oFfvcRcXHKS6H/95kDCqI4iKMmJq8XBh/TAD2KXpB9LE7ZRUyxYzYia8UawkdFKwmciT4B0jEi5elHr4+8NB3xTHLprjdFWxv15Gd5uM3/U2AdZU411RB7itocWzpgVCYM48kQWaub5bINbunU2vnyg9Sr0ediUYVMqnS4tujXObd67BCS6R0UunivTFwv0U65BjOEuY65sq54v90nivolh+3EShLCSSmZeqKlIxSCEtldx+gXQVhRJcjeg7Q2M/8AZ0shfw/ieZGCsondwdX1+X7KOXFeljcvcz9DgajTdszJ+UPsaVjknhgD",
+          "page_age": "January 14, 2026"
+        },
+        {
+          "type": "web_search_result",
+          "title": "Python | endoflife.date",
+          "url": "https://endoflife.date/python",
+          "encrypted_content": "ErQGCioIDxgCIiRjOTUyM2NjMi1iZTkyLTQ1YmUtYWU3My02Y2Q0NjlkMzMxMDYSDDjFRJapgd7A34MTxhoM6MIW7iLFTUnWMXg8IjASLJtp2+FO5kHP5oc3dh1jxmmwug0HNHXxAt/iKt0SMp0d8LVt8yo7T+tms+FzENsqtwVuJbro5qZ5RSCBXREI1a669qGOadEMA/rTYKM9/s7mOl4InA7iOYYeLfWIBALzUcj58LWSu2WdYrEo2jfbn8gz1rXynCY/sLLGSwxodO8ZeWzs/3ntthI1vzkvaOXrEcPmaTDm2Ur2JZzhcr80F3JIndxk7G/A0Lh9VGtWCeQWsFpKDTwFtJfmgTbvhl/1IKMIGcVHqgwg7yZb2epT5LLaFzt/dj5PGlk80Q/x3l+b+jfZzHPt8H4QLEVxCiasJAXoFUoL4G2a/bilrYKzBjC0+uXR4GH0xiHcCfNMGzZAMulvPmJf/9gyNIMUxJFio13UkPtOxvpsorW3rmrNkFKWg+3chI8ltgFpgnTzYYvnSINpuSNoUsmHuSAuStcOeWEAcftB/0/8VH+j9Rfmf0CTcRmbNnY+5isnpqrWKpEoeYTLGAgwxbDFrv0ICo3x5/WdDo4KPv/SPEGd/4aaBOvozSwB8lmEMg5orZiSHVfQQYht16zsSbiblqX9F86WRScNPcfaKMWQRR6It0b2eXsY+akvsrtt859YtD7LmYRdDNS+wXRovK5lWdPJ6n9XWVSXPUfhNVYpcu7dCssPHqkt2InMo8Zc49NMF891sWIplM6pInJTZLo9TLxZKAiNYTco4nlNJRicB1LC0YJw/65gG9HViEdAmKQQAvHCiAYBK7fA/97ePBDhGq+MIGaVKc3Q7seGntjJEp5RCbfzKbbz/xKfayITuDTLt7pT/09GoRm6lOJ2D5/3ew6i29Uh1Lp+Dpd/SwoaHeGFd6tn+WQdh9eApXQ2Vthx9vsk0UTSjmsxEUb6Na8EDpDdEeNpixYI+JbKQsijTGJdXqFolo1rC1wp0b1vU1a6L1UT/50rtATf9zei/OA2CcOHbNIJwB/DJYB2SCNbCF9+8WzOOCVgoS4aVQhK2BgD",
+          "page_age": "2 days ago"
+        },
+        {
+          "type": "web_search_result",
+          "title": "Python Releases for Windows | Python.org",
+          "url": "https://www.python.org/getit/windows/",
+          "encrypted_content": "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",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "What's new in Python 3.14 — Python 3.14.4 documentation",
+          "url": "https://docs.python.org/3/whatsnew/3.14.html",
+          "encrypted_content": "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",
+          "page_age": "February 23, 2026"
+        },
+        {
+          "type": "web_search_result",
+          "title": "Python Release Python 3.13.11 | Python.org",
+          "url": "https://www.python.org/downloads/release/python-31311/",
+          "encrypted_content": "EpgKCioIDxgCIiRjOTUyM2NjMi1iZTkyLTQ1YmUtYWU3My02Y2Q0NjlkMzMxMDYSDJbDR4KwqA/cD8Sv9RoMcuS0IY5Y/RuN39qbIjAVkveP1gooje3cjNCLJY48mCYnC2NH5bXXWrZZiphWME5WUTVzhvn0gSGLbhYte8Iqmwkd+yzysAH7di/sOxSsH1qqMNAg+jiQdqoHdcjfOJOupu1XaNEoL7n1IivMDsU6CrjSHghEI6Srt06ms4+gtiQ3FzwQQPdOb+WecQUok4ahr4z0UzCr2xb8F0f9ZEhO61ZEv4WKCGMhdj0vGg/GWvwFNRAVggD6amAyWQScmv/FFZoxBJLjXWA0d6B69pppYnGya/zQfv63QQRZ537wD7xfsj9+94V6p85ez9afc3KDugtAFIKowbylQcoOapaA7gCmOSDL0NKp+UiGCCDuxNKV3wncIESydkQtQI2mZ0uPhV0RQ2+U77OLnpG/PbsaTD2PdOe+odO0FR2EucSNj8OeEKG6EgpyT9j/CtHL4y4b2VNoOPYCNoHzy3VAAk0zmYQ4I200oMLHkSSvzKmY/5ZZL6a1dEOab3qQuvMVA09zNhajiCbKK52cpkfs+pYkouMUGpMA+NWZw2Z8OdirosR1WAWh30pVB7bX1ixWY8wm6bFIghlElYGDBH3S7DzacjQwWf4/Ya/PmQlR1xz4MvORxvuwOIm1LuB4vl4J6GSfvOvZ71YR0oFKZa0bmf5yuqFOx31jqBEJhiJnDTmAOlOsgB/5FGk/sAzcLal4nnNprbdjcMR9e4Rg4iuc/THXiqWl5B/CfWipwsn8lcTuCgMQ5B/90eBAIPLw4gECs2XQm6QFPWBCbWaZVDMWWN6k0Dh4LKeRQGNPRed78SuyaxTj8Ed5Xg27JD0kPqRDebM2nZ2VQ2NTJbTNSQV+YkZkG5HIHBWboRR6BvGFTsTxO/zCsL97+2FuxpBUBzMhkaNcvQ0KMP7Nv0+EsxlqpoRQ2dPYBmbA0L0thlkvQb3P5H4FrMZnVtlLOXDIF8tjUtS40NLOZH5/9sUjyLCT/A5XwCnPvuyPAulLR0FvXiJSCkiFUnXtv2r4ByUoNrazPDb1WPkijbbiF+2bDEwZ/jt0xbvU1Wt0OjfZ55G/GtMSG1qM1eyn8RQKQ2wWYmqMR8XpHOcJEonyKNNLQvDKhfN1Exyj4q8ohFsaAMEJz8Nzxo4KTTv4Z/yqoZ7LZgdwxzkyfNf/W1uTfgxMdS5r1krvg5JDoaMmmEk/2I0GRjbs0fzKxuJeaX73gt6+WKxJe/7PtYJtTHMl/Lt7NIu5SMUmjCBEwK4ukfRHE1WWtKnAPZtDom/2y/sl/QjG2gZ6bnwKb5rkona/FV2nRqfcGlLqw63hzXfu12sR0dIeUvh0RVDglSVLd96DESBCLKJjyMnTafNDUxynaBWFCMEo1iKhNPX/QaJ4AsTAvVfFiUCOY102gYFTsIVXa63DGI4NPPj9ot+J6f4Zabxx4VX/n7S/j+RQUHkWmXnyXP2w0ywrRa9HF60u6Wn5hCq7uDudozWkRB1uEs6Ew/uNCIJdj/lS05VUkMXJ6qQb7R8GOIg8EA5ZX8pQydx1yaDQTWD3lfAoo9yXKNGMH8Vlvo5BOeXSgjB6jeRPIsCH2sSiCOdl1swkwZaYFi0jWjfDCrPn1bz2o1xlUiQgb4FuRhceb4wGMGclTeTPRzktH8xVh3hHjrSEdqQdxr1LMJ1bWOoYAw==",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Python Source Releases for Source release",
+          "url": "https://www.python.org/downloads/source/",
+          "encrypted_content": "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",
+          "page_age": null
+        },
+        {
+          "type": "web_search_result",
+          "title": "Python Release Python 3.15.0a2 | Python.org",
+          "url": "https://www.python.org/downloads/release/python-3150a2/",
+          "encrypted_content": "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",
+          "page_age": null
+        }
+      ],
+      "caller": {
+        "type": "direct"
+      }
+    },
+    {
+      "type": "text",
+      "text": "Based on the search results, "
+    },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "Python 3.14.4, released on 7 April 2026 · Python 3.14.3, released on 3 February 2026 · Python 3.14.2, released on 5 December 2025 · Python 3.14.1, rel...",
+          "url": "https://www.python.org/doc/versions/",
+          "title": "Python documentation by version | Python.org",
+          "encrypted_index": "Eo8BCioIDxgCIiRjOTUyM2NjMi1iZTkyLTQ1YmUtYWU3My02Y2Q0NjlkMzMxMDYSDEbFoV+2PNXUIPefehoM7ILmBMWGIp8FUiZwIjBAFAZKzzk3hXd3R90xFw4zaRxrC+cj0y+HkaycwrroBXxmvSDIRKVtlxcXPoi9C8gqEwCAG3lN6lp3DXp4nl73mN6oGHYYBA=="
+        },
+        {
+          "type": "web_search_result_location",
+          "cited_text": "The latest major version, Python 3.14 was officially released on October 7, 2025. ",
+          "url": "https://www.liquidweb.com/blog/latest-python-version/",
+          "title": "Latest Python Version (2025) – What's New in Python 3.14?",
+          "encrypted_index": "Eo8BCioIDxgCIiRjOTUyM2NjMi1iZTkyLTQ1YmUtYWU3My02Y2Q0NjlkMzMxMDYSDE+w5UtL/5Js0xLONxoMXQL/6bOu8hx75UAMIjCbOAbt2L00qk4wQylUdJMqOR/1tBaLuSPqjxTYTVOVaAJKc4QnnED0tZH8PNTc7egqE/A5g1iL4iEJ16+NVAARFWFxIvMYBA=="
+        },
+        {
+          "type": "web_search_result_location",
+          "cited_text": "Python 3.14 was released on 7 October 2025. ",
+          "url": "https://docs.python.org/3/whatsnew/3.14.html",
+          "title": "What's new in Python 3.14 — Python 3.14.4 documentation",
+          "encrypted_index": "Eo8BCioIDxgCIiRjOTUyM2NjMi1iZTkyLTQ1YmUtYWU3My02Y2Q0NjlkMzMxMDYSDCjxVV9hMXRE+fMB1RoMm4UHfVV3N+Gd5sd/IjDa1vXjc1K8RCYsYOeibaXLHomTSG4SwsgI4yXcfVYGciDsPaYhjov8zB+Gy1A5pMQqE4eBC5ORlR68S9HV1N/BgEYr4AEYBA=="
+        }
+      ],
+      "type": "text",
+      "text": "the latest version of Python released in 2025 is **Python 3.14**, which was officially released on October 7, 2025"
+    },
+    {
+      "type": "text",
+      "text": ".\n\nSince its initial release in October 2025, "
+    },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "Python 3.14.4, released on 7 April 2026 · Python 3.14.3, released on 3 February 2026 · Python 3.14.2, released on 5 December 2025 · Python 3.14.1, rel...",
+          "url": "https://www.python.org/doc/versions/",
+          "title": "Python documentation by version | Python.org",
+          "encrypted_index": "Eo8BCioIDxgCIiRjOTUyM2NjMi1iZTkyLTQ1YmUtYWU3My02Y2Q0NjlkMzMxMDYSDPXUzu3fGCec+xzWVhoMeAXobNtpsa7L/+g6IjBNVOQyqWYd1JnLU1/NCSVgPRu70I4IiTv24+MjAMbibUlVzwXkQhNLz1SBAw67iH8qEzRPf8LfVDB7rtfpX8sPQnLjOP4YBA=="
+        }
+      ],
+      "type": "text",
+      "text": "Python 3.14 has had several maintenance releases, with Python 3.14.2 released on December 5, 2025"
+    },
+    {
+      "type": "text",
+      "text": " being the most recent as of the available information.\n\n"
+    },
+    {
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "cited_text": "Python 3.14 is now the latest feature release series of Python 3. ",
+          "url": "https://www.python.org/downloads/release/python-31311/",
+          "title": "Python Release Python 3.13.11 | Python.org",
+          "encrypted_index": "Eo8BCioIDxgCIiRjOTUyM2NjMi1iZTkyLTQ1YmUtYWU3My02Y2Q0NjlkMzMxMDYSDBoe72kAP0BoYRWctRoM/y9pKSkxxbsq0ZsjIjBOipieeHfIXnHt7eNevvf1NvH8BJQHqWhSINAsZh4MwTBtwJCegV+YM3KEMjNAp3oqE0QOBTDJZXfEGm34LaGW1UYbHewYBA=="
+        }
+      ],
+      "type": "text",
+      "text": "Python 3.14 is now the latest feature release series of Python 3"
+    },
+    {
+      "type": "text",
+      "text": "."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 10,
+    "cache_creation_input_tokens": 9364,
+    "cache_read_input_tokens": 4446,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 226,
+    "service_tier": "standard",
+    "inference_geo": "not_available",
+    "server_tool_use": {
+      "web_search_requests": 1,
+      "web_fetch_requests": 0
+    }
+  }
+}

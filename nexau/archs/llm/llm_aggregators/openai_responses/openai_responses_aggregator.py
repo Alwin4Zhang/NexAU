@@ -1,3 +1,29 @@
+"""OpenAI Responses API stream aggregator.
+
+Aggregates ``ResponseStreamEvent`` events from the OpenAI Responses
+endpoint into a complete ``Response`` plus emits unified Event objects.
+Handles message / function_call / reasoning output items including the
+``output_item.added`` → ``content_part.added`` → delta → ``done`` lifecycle.
+
+⚠️ PARITY PROTOCOL: This module has a twin in
+``nexau/archs/main_sub/execution/llm_caller.py``
+(``OpenAIResponsesStreamAggregator``) that MUST stay in lock-step until
+RFC-0023 §阶段 ③ retires the twin. Any change to this module's parsing
+or emission logic requires:
+
+1. Run ``uv run pytest tests/aggregator_parity/`` before commit.
+2. If your change handles a new wire pattern (new event type /
+   reasoning behavior / refusal shape / built-in tool result), record
+   a fixture via ``tests/aggregator_parity/scripts/record_fixture.py``.
+3. If parity surfaces a divergence, fix the buggy side rather than xfail
+   — real Set A↔Set B drift = real production bug. The harness has
+   already caught a 'silent reasoning' bug here (gpt-5.x produces
+   reasoning tokens with no summary text — Set A used to emit no
+   thinking events; fixed in d723b002).
+
+See ``tests/aggregator_parity/README.md`` for the full protocol.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -146,6 +172,10 @@ class OpenAIResponsesAggregator(Aggregator[ResponseStreamEvent, Response]):
                 agg = self._output_aggregators.get(item.item.id)
                 if agg and isinstance(agg, _ReasoningItemAggregator):
                     agg.aggregate(item.item)
+                    # Emit ThinkingTextMessageEnd if reasoning was silent
+                    # (no summary_text.done arrived). See _ReasoningItemAggregator
+                    # docstring + RFC-0023 §阶段 ① divergence catalogue.
+                    agg.finish()
                 return
 
             if item.item.type == "function_call":
@@ -293,6 +323,10 @@ class _ReasoningItemAggregator(Aggregator[ReasoningItemAggregatorEvent, Response
         self._on_event = on_event
         self._run_id = run_id
         self._response_id = response_id
+        # Track Start/End emission for idempotent emit and silent-reasoning
+        # safety net. See _emit_start_if_needed / _emit_end_if_needed.
+        self._started = False
+        self._ended = False
         # Initialize _value with empty ResponseReasoningItem
         self._value = ResponseReasoningItem(
             id=self._item_id,
@@ -302,6 +336,54 @@ class _ReasoningItemAggregator(Aggregator[ReasoningItemAggregatorEvent, Response
             encrypted_content=None,
             status=None,
         )
+
+    def _emit_start_if_needed(self) -> None:
+        """Emit ThinkingTextMessageStart at most once.
+
+        Called from BOTH the initial ``output_item.added`` reasoning dispatch
+        AND ``response.reasoning_summary_part.added`` (idempotent). Emitting
+        early on output_item.added ensures the silent-reasoning case
+        (model produces ``reasoning_tokens`` but no summary text — observed
+        in gpt-5.x at all effort levels) still surfaces a thinking signal
+        to the UI / event consumer, keeping Set A's stream symmetric with
+        Set B's persisted ReasoningBlock marker.
+        """
+        if self._started:
+            return
+        self._started = True
+        self._on_event(
+            ThinkingTextMessageStartEvent(
+                timestamp=int(datetime.now().timestamp() * 1000),
+                parent_message_id=self._response_id,
+                thinking_message_id=self._item_id,
+                run_id=self._run_id,
+            )
+        )
+
+    def _emit_end_if_needed(self) -> None:
+        """Emit ThinkingTextMessageEnd at most once.
+
+        Called from BOTH ``response.reasoning_summary_text.done`` AND
+        ``finish()`` (which the parent invokes on ``output_item.done``).
+        Idempotent: only fires after Start was emitted.
+        """
+        if not self._started or self._ended:
+            return
+        self._ended = True
+        self._on_event(
+            ThinkingTextMessageEndEvent(
+                timestamp=int(datetime.now().timestamp() * 1000),
+                thinking_message_id=self._item_id,
+            )
+        )
+
+    def finish(self) -> None:
+        """Called by the parent aggregator on ``response.output_item.done``.
+
+        Ensures End is emitted even when the model produced reasoning
+        silently (no ``summary_part.added`` / ``summary_text.done`` events).
+        """
+        self._emit_end_if_needed()
 
     def aggregate(self, item: ReasoningItemAggregatorEvent) -> None:
         """Aggregate a reasoning content event.
@@ -314,6 +396,11 @@ class _ReasoningItemAggregator(Aggregator[ReasoningItemAggregatorEvent, Response
 
         if item.type == "reasoning":
             self._value = item.model_copy(deep=True)
+            # Emit Start on the initial output_item.added dispatch. If
+            # summary text arrives later, summary_part.added's call is a
+            # no-op (idempotent). If reasoning is silent, finish() emits
+            # the matching End on output_item.done.
+            self._emit_start_if_needed()
             return
 
         if item.type == "response.reasoning_summary_part.added":
@@ -325,15 +412,7 @@ class _ReasoningItemAggregator(Aggregator[ReasoningItemAggregatorEvent, Response
                     f"summary_part.added events must be processed in order of summary_index."
                 )
             self._value.summary.append(Summary(text="", type="summary_text"))
-            # Emit start event - reasoning content begins with first summary part
-            self._on_event(
-                ThinkingTextMessageStartEvent(
-                    timestamp=int(datetime.now().timestamp() * 1000),
-                    parent_message_id=self._response_id,
-                    thinking_message_id=self._item_id,
-                    run_id=self._run_id,
-                )
-            )
+            self._emit_start_if_needed()
             return
 
         if item.type == "response.reasoning_summary_text.delta":
@@ -354,13 +433,7 @@ class _ReasoningItemAggregator(Aggregator[ReasoningItemAggregatorEvent, Response
             # Set the final text for this summary part (ensures completeness)
             summary = self._value.summary[item.summary_index]
             summary.text = item.text
-            # Emit end event - summary part is complete
-            self._on_event(
-                ThinkingTextMessageEndEvent(
-                    timestamp=int(datetime.now().timestamp() * 1000),
-                    thinking_message_id=self._item_id,
-                )
-            )
+            self._emit_end_if_needed()
             return
 
         if item.type == "response.reasoning_summary_part.done":

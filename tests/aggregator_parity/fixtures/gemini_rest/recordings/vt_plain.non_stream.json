@@ -1,0 +1,31 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "1. Red is the bold color of a ripe apple.\n2. Blue reflects the vastness of a clear sky.\n3. Green is the vibrant shade of fresh spring grass.",
+            "thoughtSignature": "EvEECu4EAQw51serIlt9nFm3cr8Jg1jE1hsbeZjUO7R2LR1HJpJlhEd+zA9vS8W932yKj+u/XulzMLLJLuP0ZIs5d7M+uipMDDN6ri6FXHj3jtnd/u6uNQfvlH1QeGRyqMB9q6kTFg1r5pmUdbeuL3z9CzwbYwEYqcId61CnU+peoEyM5DJ1NxL0ITxWG5gjeEh1WUkl/7BEc6oaQeEGKNNQFFsvjpHOmklkUBm7s6/WIl2e0Ym6P59KoGhHESJ5Z6FTjpSZfHavIHzDTMfcA+JLl6Iuakapadvj04pbuZcMsEUH2awGxFwt7pN3IHNlqKqZaTuW3hWpo82cQG6AHwQDt37QRsRD4ldqza6GzjruI/aJ7VS7aMJLmLj/JQ8UWSl9dTCPz81NLHhFBFzzqDKb3E3UoBjtr1db5qNSBB8GNR9rF/FsdJv0vjFU949MGxSo5wHbSeQKMCIa+606MGPBSSrn1DB/LF92f8bIUseJBkVRYoPreK1T8MOYS4tqBP9Q3guwo+xc+CZ8y+TrbFDF5peeiFOW7SBbj83XYOFydyOmddWVOCw4/7nA3l/BfkEwa+R+dTZx549EFxPskyylavdPIm7lXe1kJeVH8Y/QV3oaZtWYvq5imB2vdPTR0evFznHAcSPU/ghIoXnJblcc1ecuu8+4ARQf1Hj/fsdlmQiTh1+1FRlL4+zxnRFZKgb2w1JmKWx/lj6Pxa+btKd/OlIjBXmHv+oM953gUUZNoyzlJAD8Xw89yYYxHo1JbXRPlHptwTGgZgghzIXZnIvlCOnfTaeWfIgdIYw1SctkQAntXkyqxs5oXH1VO77+Q5vaqw=="
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 11,
+    "candidatesTokenCount": 38,
+    "totalTokenCount": 216,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 11
+      }
+    ],
+    "thoughtsTokenCount": 167
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "fPP2aaqzOtac-8YPnNbk6AQ"
+}

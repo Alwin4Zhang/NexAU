@@ -1,0 +1,113 @@
+{
+  "background": false,
+  "completed_at": 1777791743,
+  "created_at": 1777791741,
+  "error": null,
+  "frequency_penalty": 0,
+  "id": "resp_0bb78c813d7707ee0169f6f2fdd640819a9b4138396c6823a1",
+  "incomplete_details": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "metadata": {},
+  "model": "gpt-5.2",
+  "moderation": null,
+  "object": "response",
+  "output": [
+    {
+      "content": [
+        {
+          "annotations": [],
+          "logprobs": [],
+          "text": "Checking current Tokyo weather via the provided tool.",
+          "type": "output_text"
+        }
+      ],
+      "id": "msg_0bb78c813d7707ee0169f6f2fed454819a8587309831ee4250",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+    },
+    {
+      "arguments": "{\"location\":\"Tokyo\"}",
+      "call_id": "call_2T9X1xywmzeocDL4RWHJscOv",
+      "id": "fc_0bb78c813d7707ee0169f6f2ff2b88819a8316db003eaed0c9",
+      "name": "get_weather",
+      "status": "completed",
+      "type": "function_call"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0,
+  "previous_response_id": null,
+  "prompt_cache_key":"redacted-cache-key",
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "effort": "none",
+    "summary": "detailed"
+  },
+  "safety_identifier":"user-redacted",
+  "service_tier": "default",
+  "status": "completed",
+  "store": false,
+  "temperature": 1,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [
+    {
+      "description": "Get weather",
+      "name": "get_weather",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "location": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 4401,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 34,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 4435
+  },
+  "user": null
+}

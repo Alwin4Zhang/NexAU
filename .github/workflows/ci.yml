@@ -5,6 +5,10 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  # Manual trigger so stacked PRs (whose base is another feature branch,
+  # not main/develop) can opt into CI on demand. Use:
+  #   gh workflow run "CI" --ref <branch-name>
+  workflow_dispatch:
 
 jobs:
   lint:
