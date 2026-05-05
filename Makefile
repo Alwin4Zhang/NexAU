@@ -30,7 +30,13 @@ pyright:
 	$(UV) run pyright
 
 test:
-	$(UV) run pytest -n auto --dist loadfile --cov=$(PACKAGE) --cov-report=xml --cov-report=html --cov-report=term --timeout=120 -v --tb=short
+	$(UV) run pytest -n auto --dist loadfile --cov=$(PACKAGE) --cov-report=xml --cov-report=html --cov-report=term --timeout=120 -v --tb=short -m "not live_nightly"
+
+# Nightly drift-detection run: cross-provider matrix, token-usage matrix,
+# and the deferred-from-PR slice of the aggregator live e2e file.
+# Run from .github/workflows/nightly.yml; not part of ``make test``.
+test-nightly:
+	$(UV) run pytest -n auto --dist loadfile --timeout=300 -v --tb=short -m "live_nightly"
 
 gen-llm-logging-data:
 	$(UV) run python -m tests.scripts.generate_llm_aggregator_logging_data

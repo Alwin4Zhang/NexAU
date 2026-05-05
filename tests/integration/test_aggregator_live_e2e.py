@@ -217,24 +217,27 @@ def _assert_minimal_streaming_response(model_response, *, label: str) -> None:
     assert model_response.usage.total_tokens > 0, f"{label}: usage.total_tokens={model_response.usage.total_tokens} (expected >0)"
 
 
-def test_openai_chat_streaming_e2e_northgate_deepseek():
+def test_openai_chat_streaming_e2e_northgate_gpt52():
     """Set A ``OpenAIChatCompletionAggregator`` → ``ModelResponse.from_openai_message``.
 
-    ``deepseek-v4-flash`` is the cheapest unrestricted OpenAI-Chat-shaped
-    model on northgate (``gpt-5.x`` are Codex-locked).
+    ``gpt-5.2`` chosen as the OpenAI-Chat-shape smoke target on northgate.
+    Earlier picks (``deepseek-v4-flash``, ``deepseek-v4-pro``) failed when
+    northgate's upstream balance for the deepseek route was drained — a
+    failure mode unrelated to our SDK that nonetheless reds every PR.
+    gpt-5.x routes are funded separately and currently stable.
     """
     key = _northgate_key()
     client = openai.OpenAI(api_key=key, base_url=_NORTHGATE_OPENAI_BASE)
     response = call_llm_with_openai_chat_completion(
         client,
         {
-            "model": "deepseek-v4-flash",
+            "model": "gpt-5.2",
             "messages": [{"role": "user", "content": _USER_PROMPT}],
             "max_tokens": 32,
             "stream": True,
         },
     )
-    _assert_minimal_streaming_response(response, label="openai_chat/deepseek")
+    _assert_minimal_streaming_response(response, label="openai_chat/gpt-5.2")
 
 
 def test_openai_responses_streaming_e2e_northgate_gpt52():

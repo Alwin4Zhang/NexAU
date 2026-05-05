@@ -167,6 +167,10 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.llm,
     pytest.mark.external,
+    # 64-case cross-provider matrix: drift detection only. Per-provider
+    # basic streaming smoke is covered by ``test_aggregator_live_e2e.py``
+    # on every PR; the matrix itself runs nightly.
+    pytest.mark.live_nightly,
     pytest.mark.skipif(not _HAS_LANGFUSE, reason="LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set"),
 ]
 
@@ -429,6 +433,13 @@ def _make_agent(
             llm_config=LLMConfig(**_build_llm_kwargs(env, thinking_enabled=thinking_enabled)),
             tools=tools or [],
             tracers=[tracer],
+            # Without this, LLMCaller's ``_call_with_retry_async`` retries
+            # an upstream 4xx (e.g. provider rejects vision input on a
+            # non-vision model) up to 5 times with exponential backoff,
+            # burning ~120s per case and tripping pytest-timeout.
+            # ``max_retries=1`` in LLMConfig only disables the OpenAI
+            # SDK's internal retries; the LLMCaller layer is independent.
+            retry_attempts=1,
         ),
         session_manager=session_manager,
         user_id="block-matrix-user",
@@ -780,12 +791,32 @@ for block in _BLOCKS:
             )
 
 
+# Some upstream models don't accept image input (e.g. ``deepseek-v4-flash``
+# returns 400 ``unknown variant 'image_url'``). Skip image cases when
+# either side is configured with such a model rather than burning the
+# pytest-timeout on a guaranteed failure. The substring set below is
+# conservative — any model name containing one of these tokens is
+# treated as "no vision". Add new entries here when wiring more models.
+_NO_VISION_MODEL_TOKENS = ("deepseek-v4-flash",)
+
+
+def _model_lacks_vision(env: ProviderEnv | None) -> bool:
+    if env is None:
+        return False
+    model_lower = env.model.lower()
+    return any(token in model_lower for token in _NO_VISION_MODEL_TOKENS)
+
+
 @pytest.mark.parametrize("case", _CASES, ids=[case.case_id for case in _CASES])
 def test_live_block_matrix(case: MatrixCase, session_manager: SessionManager) -> None:
     if case.source_env is None:
         pytest.skip(f"LIVE env vars not set for source api type {case.source_name}")
     if case.target_env is None:
         pytest.skip(f"LIVE env vars not set for target api type {case.target_name}")
+    if case.block == "image" and (_model_lacks_vision(case.source_env) or _model_lacks_vision(case.target_env)):
+        pytest.skip(
+            f"Image case skipped: source={case.source_env.model!r} or target={case.target_env.model!r} doesn't accept ``image_url`` input"
+        )
 
     try:
         second_text, payload, session_id = _run_case_and_capture(case, session_manager)

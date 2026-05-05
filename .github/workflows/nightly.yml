@@ -1,0 +1,77 @@
+name: Nightly Live Drift
+
+# Drift-detection run for live tests deferred from per-PR CI:
+# - 64-case cross-provider matrix (test_block_matrix_langfuse_live.py)
+# - token-usage matrix (test_token_usage_live_matrix.py)
+# - 23 nightly-tagged tests in test_aggregator_live_e2e.py (per-provider
+#   basic-streaming smoke stays on every PR — see tests/conftest.py
+#   _AGGREGATOR_LIVE_SMOKE allowlist)
+#
+# Runs at 18:00 UTC daily (02:00 CST). Failures notify the dev Lark
+# channel but do NOT block any PR — drift is not an incident, it's
+# a heads-up that an upstream provider changed shape.
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:  # manual trigger for ad-hoc drift checks
+
+jobs:
+  nightly-live:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 60
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: Install deps
+      run: uv sync --all-extras
+
+    - name: Run nightly live drift tests
+      env:
+        LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        LLM_MODEL: ${{ vars.LLM_MODEL }}
+        LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+        NEXAU_RUN_LIVE_LLM_TESTS: "1"
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        NORTHGATE_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
+        TOKEN_MATRIX_GATEWAY_GEMINI_API_KEY: ${{ secrets.TOKEN_MATRIX_GATEWAY_GEMINI_API_KEY }}
+        LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+        LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+        LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
+        LIVE_OPENAI_CHAT_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
+        LIVE_OPENAI_CHAT_BASE_URL: https://northgate.xiaobei.top/v1
+        LIVE_OPENAI_CHAT_MODEL: gpt-5.2
+        LIVE_OPENAI_RESPONSES_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
+        LIVE_OPENAI_RESPONSES_BASE_URL: https://northgate.xiaobei.top/v1
+        LIVE_OPENAI_RESPONSES_MODEL: gpt-5.2
+        LIVE_ANTHROPIC_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
+        LIVE_ANTHROPIC_BASE_URL: https://northgate.xiaobei.top
+        LIVE_ANTHROPIC_MODEL: claude-sonnet-4-5-20250929
+        LIVE_GEMINI_API_KEY: ${{ secrets.TOKEN_MATRIX_GATEWAY_GEMINI_API_KEY }}
+        LIVE_GEMINI_BASE_URL: http://14.103.60.158:3001/v1beta
+        LIVE_GEMINI_MODEL: gemini-3.1-flash-lite-preview
+      run: |
+        make test-nightly
+
+    - name: Notify Lark on failure
+      if: failure() && github.event_name == 'schedule'
+      env:
+        LARK_WEBHOOK: ${{ secrets.LARK_NIGHTLY_WEBHOOK }}
+        LARK_SIGN_SECRET: ${{ secrets.LARK_NIGHTLY_SIGN_SECRET }}
+      run: |
+        RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        ./scripts/notify_lark.sh "🌙 Nightly live drift run failed — likely an upstream provider shape change.
+        ${RUN_URL}"

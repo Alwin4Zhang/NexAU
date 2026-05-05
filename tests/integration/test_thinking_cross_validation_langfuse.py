@@ -95,8 +95,18 @@ def _fetch_traces_by_session(
     min_traces: int = 1,
     retries: int = 20,
     delay: float = 3.0,
+    require_named: bool = True,
 ) -> list[dict[str, Any]]:
-    """Fetch traces from Langfuse REST API by session_id with retry (eventual consistency)."""
+    """Fetch traces from Langfuse REST API by session_id with retry.
+
+    Langfuse backend ingest is eventually consistent: a trace becomes
+    queryable in the list endpoint moments after upload, but enrichment
+    fields like ``name`` arrive later. Tests that assert on ``name``
+    were flaking because ``flush() / shutdown()`` doesn't block on
+    backend indexing. ``require_named=True`` (the default) extends the
+    retry to also wait until every returned trace has a non-empty
+    ``name``, eliminating the field-freshness race.
+    """
     for i in range(retries):
         resp = requests.get(
             f"{_HOST}/api/public/traces",
@@ -108,10 +118,14 @@ def _fetch_traces_by_session(
             traces_data = resp.json()
             trace_list: list[dict[str, Any]] = traces_data.get("data", [])
             if len(trace_list) >= min_traces:
-                return trace_list
+                if not require_named or all(t.get("name") for t in trace_list):
+                    return trace_list
         if i < retries - 1:
             time.sleep(delay)
-    pytest.fail(f"No traces (or fewer than {min_traces}) found in Langfuse for session_id={session_id} after {retries * delay}s")
+    pytest.fail(
+        f"No traces (or fewer than {min_traces}, or trace.name still empty after backend ingest) "
+        f"found in Langfuse for session_id={session_id} after {retries * delay}s"
+    )
 
 
 # ---------------------------------------------------------------------------

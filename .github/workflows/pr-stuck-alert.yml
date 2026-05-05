@@ -1,0 +1,95 @@
+name: PR Stuck Alert
+
+# Notifies Lark when a single PR has accumulated ≥3 failed CI runs in
+# the past 24h. Signal: usually a real bug, environment issue, or
+# misconfiguration the author hasn't noticed — not flake. The author
+# is probably re-pushing in frustration; a single notification with
+# the failure pattern saves them a 4th retry.
+#
+# De-duplication: posts a sentinel marker comment on the PR; the next
+# trigger won't re-notify if the marker exists. Author can re-arm by
+# deleting the comment.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  alert:
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Count recent failed runs for this PR
+      id: count
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        BRANCH="${{ github.event.workflow_run.head_branch }}"
+        # Query the last 24h of CI runs on this branch with conclusion=failure.
+        # ``--jq length`` returns the count.
+        SINCE=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+        FAILED=$(gh api "repos/${{ github.repository }}/actions/runs?branch=${BRANCH}&status=failure&per_page=20" \
+          --jq "[.workflow_runs[] | select(.created_at > \"${SINCE}\")] | length")
+        echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+        echo "Branch ${BRANCH}: ${FAILED} failed runs in last 24h"
+
+    - name: Resolve PR number from head branch
+      id: pr
+      if: steps.count.outputs.failed >= '3'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        BRANCH="${{ github.event.workflow_run.head_branch }}"
+        PR_NUMBER=$(gh api "repos/${{ github.repository }}/pulls?head=${{ github.repository_owner }}:${BRANCH}&state=open" \
+          --jq '.[0].number // empty')
+        if [[ -z "$PR_NUMBER" ]]; then
+          echo "::warning::No open PR found for branch ${BRANCH}"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        AUTHOR=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq '.user.login')
+        echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+        echo "author=${AUTHOR}" >> "$GITHUB_OUTPUT"
+
+    - name: Check for existing notification marker
+      id: dedup
+      if: steps.pr.outputs.number && steps.pr.outputs.skip != 'true'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        EXISTING=$(gh api "repos/${{ github.repository }}/issues/${{ steps.pr.outputs.number }}/comments" \
+          --jq '[.comments[]?.body // .[]?.body] | map(select(. | contains("<!-- pr-stuck-alert -->"))) | length' \
+          2>/dev/null || echo "0")
+        # Fallback for the JQ shape variability:
+        if [[ "$EXISTING" -eq 0 ]]; then
+          EXISTING=$(gh api "repos/${{ github.repository }}/issues/${{ steps.pr.outputs.number }}/comments" \
+            --jq '[.[] | select(.body | contains("<!-- pr-stuck-alert -->"))] | length')
+        fi
+        echo "existing=${EXISTING}" >> "$GITHUB_OUTPUT"
+
+    - name: Notify Lark + post sentinel comment
+      if: steps.pr.outputs.number && steps.dedup.outputs.existing == '0'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        LARK_WEBHOOK: ${{ secrets.LARK_NIGHTLY_WEBHOOK }}
+        LARK_SIGN_SECRET: ${{ secrets.LARK_NIGHTLY_SIGN_SECRET }}
+      run: |
+        PR_URL="https://github.com/${{ github.repository }}/pull/${{ steps.pr.outputs.number }}"
+        ./scripts/notify_lark.sh "⚠️ PR #${{ steps.pr.outputs.number }} 已累计 ${{ steps.count.outputs.failed }} 次 CI 失败（24h 内）
+        作者: ${{ steps.pr.outputs.author }}
+        建议: 别再 push retry，先看日志找根因
+        ${PR_URL}"
+        gh pr comment "${{ steps.pr.outputs.number }}" --body "<!-- pr-stuck-alert -->
+        🤖 这个 PR 在过去 24h 内已经累计 ${{ steps.count.outputs.failed }} 次 CI 失败。已在 Lark 通知。
+
+        如果是 flake，可以删除本 comment 重新 arm 通知；如果是真实失败，看 [Actions 日志](${PR_URL}/checks) 排查根因后再 push。"

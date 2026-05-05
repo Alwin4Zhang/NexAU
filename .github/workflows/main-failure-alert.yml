@@ -1,0 +1,61 @@
+name: Main Branch Failure Alert
+
+# Posts a Lark notification when the main CI workflow fails on the main
+# branch (i.e. post-merge breakage). Distinct from a PR failure: a main
+# failure means we shipped broken code, the next PR rebase will inherit
+# the breakage, and the team needs to know immediately.
+#
+# Triggered by ``workflow_run`` so it fires AFTER CI completes and has
+# access to the conclusion. ``workflow_run`` runs on the default branch
+# regardless of which branch the upstream workflow ran on, so we filter
+# explicitly on ``head_branch == 'main'``.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  alert:
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Resolve commit metadata
+      id: meta
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        SHA="${{ github.event.workflow_run.head_sha }}"
+        SHORT_SHA="${SHA:0:7}"
+        AUTHOR=$(gh api "repos/${{ github.repository }}/commits/${SHA}" --jq '.commit.author.name')
+        SUBJECT=$(gh api "repos/${{ github.repository }}/commits/${SHA}" --jq '.commit.message' | head -1)
+        # Find the failed jobs (most useful signal — narrow the post-mortem)
+        FAILED_JOBS=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/jobs" \
+          --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')
+        {
+          echo "sha=${SHORT_SHA}"
+          echo "author=${AUTHOR}"
+          echo "subject=${SUBJECT}"
+          echo "failed_jobs=${FAILED_JOBS}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Notify Lark
+      env:
+        LARK_WEBHOOK: ${{ secrets.LARK_NIGHTLY_WEBHOOK }}
+        LARK_SIGN_SECRET: ${{ secrets.LARK_NIGHTLY_SIGN_SECRET }}
+      run: |
+        RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}"
+        ./scripts/notify_lark.sh "🚨 main 分支 CI 失败 — 后续 PR rebase 会继承
+        commit: ${{ steps.meta.outputs.sha }} (${{ steps.meta.outputs.author }})
+        ${{ steps.meta.outputs.subject }}
+        失败 job: ${{ steps.meta.outputs.failed_jobs }}
+        ${RUN_URL}"

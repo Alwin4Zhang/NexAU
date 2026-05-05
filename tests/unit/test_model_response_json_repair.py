@@ -163,3 +163,26 @@ def test_model_tool_call_from_openai_unparseable_arguments_are_wrapped_as_valid_
     assert tool_call.arguments["raw_arguments"] == "not-json"
     assert isinstance(tool_call.raw_arguments, str)
     assert json.loads(tool_call.raw_arguments) == {"raw_arguments": "not-json"}
+
+
+def test_from_gemini_rest_handles_explicit_null_parts() -> None:
+    """Gemini can return ``{"parts": null}`` when a thinking-enabled call
+    burns its full output budget on reasoning and emits no visible content.
+    ``from_gemini_rest`` must treat that as empty, not raise TypeError.
+    """
+    response = ModelResponse.from_gemini_rest(
+        {
+            "candidates": [
+                {
+                    "content": {"role": "model", "parts": None},
+                    "finishReason": "MAX_TOKENS",
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 0, "totalTokenCount": 100},
+        }
+    )
+    # Empty/None content acceptable — the key win is no TypeError on iteration.
+    # ``from_gemini_rest`` normalizes empty ``content_text`` to None (line 765).
+    assert response.content in (None, "")
+    assert response.tool_calls == []
+    assert response.usage.input_tokens == 100

@@ -715,7 +715,13 @@ class ModelResponse:
 
         candidate = response_json["candidates"][0]
         content_obj = candidate.get("content", {})
-        parts = content_obj.get("parts", [])
+        # Gemini can return ``{"parts": null}`` explicitly (e.g. when a
+        # thinking-enabled call burns its full output budget on the
+        # reasoning channel and emits no visible content). ``.get(default)``
+        # returns the explicit None in that case, NOT the default — guard
+        # with ``cast(...) or []`` so the iteration below doesn't
+        # ``TypeError`` and pyright keeps the static type narrow.
+        parts: list[dict[str, Any]] = cast(list[dict[str, Any]], content_obj.get("parts") or [])
 
         content_text = ""
         reasoning_content = ""

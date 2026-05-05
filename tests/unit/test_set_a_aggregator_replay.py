@@ -277,6 +277,31 @@ class TestOpenAIChatReplay:
             "(regression net for PR #475 'preserve reasoning_details verbatim')"
         )
 
+    def test_deepseek_pro_tool_call_with_reasoning(self):
+        """v4-pro emits tool_calls AFTER a reasoning_content prelude.
+
+        Mixed-channel coverage: the aggregator must not let
+        reasoning_content chunks shadow the tool_calls deltas that
+        follow, and the final ChatCompletion must carry both.
+        """
+        completion, _ = _replay_openai_chat("deepseek_pro_tool")
+        msg = completion.choices[0].message
+        assert msg.tool_calls, "v4-pro tool recording should yield tool_calls"
+        assert msg.tool_calls[0].function.name == "get_weather"
+        # reasoning_content prelude should also survive into the final message
+        rc = getattr(msg, "reasoning_content", None)
+        assert rc, "v4-pro tool recording should still preserve the reasoning_content prelude"
+
+    def test_deepseek_pro_multichunk_dual_channel(self):
+        """v4-pro long-output: both reasoning_content and content streams
+        get concatenated correctly across hundreds of delta frames.
+        """
+        completion, _ = _replay_openai_chat("deepseek_pro_multichunk")
+        msg = completion.choices[0].message
+        assert msg.content and len(msg.content) > 200, "multichunk content too short"
+        rc = getattr(msg, "reasoning_content", None)
+        assert rc and len(rc) > 200, "multichunk reasoning_content too short"
+
     def test_openrouter_reasoning_details_preserved(self):
         """OpenRouter wraps reasoning in ``reasoning_details: list[dict]``
         rather than ``reasoning_content: str``. Deleted Set B test

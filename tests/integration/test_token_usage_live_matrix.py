@@ -32,7 +32,14 @@ from tests.utils.live_token_usage_matrix import (
     usage_validation_notes,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.llm]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.llm,
+    # Token-usage drift matrix: nightly only. Provider usage shape
+    # changes are caught here; our SDK regressions are caught by unit
+    # ``test_usage.py`` + replay assertions on every PR.
+    pytest.mark.live_nightly,
+]
 
 
 @dataclass(slots=True)

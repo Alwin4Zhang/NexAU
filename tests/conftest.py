@@ -537,6 +537,10 @@ def pytest_configure(config):
     )
     config.addinivalue_line("markers", "requires_rg: marks tests that require ripgrep (rg)")
     config.addinivalue_line("markers", "requires_ffmpeg: marks tests that require ffmpeg")
+    config.addinivalue_line(
+        "markers",
+        "live_nightly: marks live tests deferred from per-PR CI to a nightly run (drift detection only)",
+    )
 
 
 # Configure anyio to only use asyncio backend (trio is not installed)
@@ -544,6 +548,19 @@ def pytest_configure(config):
 def anyio_backend():
     """Configure anyio to use asyncio backend."""
     return "asyncio"
+
+
+# Per-provider basic-streaming smoke kept on every PR; the rest of
+# ``test_aggregator_live_e2e.py`` is auto-marked ``live_nightly`` and
+# only runs in the nightly workflow.
+_AGGREGATOR_LIVE_SMOKE = frozenset(
+    {
+        "test_openai_chat_streaming_e2e_northgate_gpt52",
+        "test_openai_responses_streaming_e2e_northgate_gpt52",
+        "test_anthropic_streaming_e2e_northgate_sonnet45",
+        "test_gemini_rest_streaming_e2e_gateway_31pro",
+    }
+)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -577,6 +594,15 @@ def pytest_collection_modifyitems(config, items):
 
         if explicit_llm_marker and not run_live_llm:
             item.add_marker(skip_llm)
+
+        # Auto-mark every live test in test_aggregator_live_e2e.py as
+        # ``live_nightly`` EXCEPT the 4 per-provider basic-streaming
+        # smoke tests. Per-PR CI deselects ``live_nightly`` to keep
+        # test-saas fast; the nightly workflow runs everything.
+        # Single source of truth lives here so the smoke allowlist
+        # doesn't drift from the test file via decorator rot.
+        if "test_aggregator_live_e2e.py" in str(item.fspath) and item.name not in _AGGREGATOR_LIVE_SMOKE:
+            item.add_marker(pytest.mark.live_nightly)
 
         # RFC-0020: 集中处理平台与可选依赖 gate，避免在测试中散落 skipif
         if item.get_closest_marker("windows_only") is not None and not platform_runtime.is_windows:

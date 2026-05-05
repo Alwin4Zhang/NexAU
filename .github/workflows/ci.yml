@@ -375,6 +375,31 @@ jobs:
         # the public ``GEMINI_API_KEY`` free tier caps at 20 daily
         # requests for one model and 0 for everything else.
         TOKEN_MATRIX_GATEWAY_GEMINI_API_KEY: ${{ secrets.TOKEN_MATRIX_GATEWAY_GEMINI_API_KEY }}
+        # Cross-provider replay matrix (RFC-0014) — 64 cases verifying
+        # that turn-1 history persisted from provider A re-serializes
+        # byte-stable when sent to provider B on turn 2. Main regression
+        # net for "PR-C.2 Set A aggregator → ModelResponse → UMP →
+        # ump_to_X serializer chain didn't break prompt cache prefix
+        # or thinking signature roundtrip". Plus 5 same-provider 2-turn
+        # payload tests. All four LIVE_* providers route through northgate
+        # except Gemini, which uses the dedicated 14.103 gateway key.
+        # ``gpt-5.2`` chosen for OpenAI Chat path because the deepseek-v4
+        # series (flash + pro) returns 400 ``unknown variant 'image_url'``
+        # on the Chat endpoint, blocking 7 image cross-provider cases.
+        # gpt-5.2 supports vision on Chat and matches LIVE_OPENAI_RESPONSES_MODEL
+        # for clean Chat↔Responses A/B comparison.
+        LIVE_OPENAI_CHAT_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
+        LIVE_OPENAI_CHAT_BASE_URL: https://northgate.xiaobei.top/v1
+        LIVE_OPENAI_CHAT_MODEL: gpt-5.2
+        LIVE_OPENAI_RESPONSES_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
+        LIVE_OPENAI_RESPONSES_BASE_URL: https://northgate.xiaobei.top/v1
+        LIVE_OPENAI_RESPONSES_MODEL: gpt-5.2
+        LIVE_ANTHROPIC_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
+        LIVE_ANTHROPIC_BASE_URL: https://northgate.xiaobei.top
+        LIVE_ANTHROPIC_MODEL: claude-sonnet-4-5-20250929
+        LIVE_GEMINI_API_KEY: ${{ secrets.TOKEN_MATRIX_GATEWAY_GEMINI_API_KEY }}
+        LIVE_GEMINI_BASE_URL: http://14.103.60.158:3001/v1beta
+        LIVE_GEMINI_MODEL: gemini-3.1-flash-lite-preview
       run: |
         make test
 
