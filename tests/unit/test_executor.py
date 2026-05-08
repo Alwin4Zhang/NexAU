@@ -922,12 +922,13 @@ class TestExecutorXMLCallProcessing:
         )
 
         ctx = make_framework_context(executor)
-        processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input, framework_context=ctx)
+        processed, should_stop, result, messages, feedbacks, ask_outcomes = executor._process_xml_calls(hook_input, framework_context=ctx)
 
         assert processed == "Just a plain response"
         assert should_stop is True
         assert result is None
         assert feedbacks == []
+        assert ask_outcomes == []
 
     def test_process_xml_calls_with_tool_calls(self, mock_llm_config, agent_state):
         """Test processing response with tool calls."""
@@ -985,7 +986,7 @@ class TestExecutorXMLCallProcessing:
             )
 
             ctx = make_framework_context(executor)
-            processed, should_stop, result, messages, feedbacks = executor._process_xml_calls(hook_input, framework_context=ctx)
+            processed, should_stop, result, messages, feedbacks, _ = executor._process_xml_calls(hook_input, framework_context=ctx)
 
             # Tool results should be appended to the response
             assert "<tool_result>" in processed
@@ -1251,7 +1252,7 @@ class TestExecutorStopToolHandling:
         )
 
         ctx = make_framework_context(executor)
-        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(parsed_response, agent_state, framework_context=ctx)
+        processed, should_stop, result, feedbacks, _ = executor._execute_parsed_calls(parsed_response, agent_state, framework_context=ctx)
 
         # The stop tool should be detected in the result
         assert "<tool_result>" in processed
@@ -1321,7 +1322,7 @@ class TestExecutorParallelExecution:
             tool_calls=[tool_call1, tool_call2],
         )
 
-        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(
+        processed, should_stop, result, feedbacks, _ = executor._execute_parsed_calls(
             parsed_response, agent_state, framework_context=make_framework_context(executor)
         )
 
@@ -1377,7 +1378,7 @@ class TestExecutorParallelExecution:
             tool_calls=[tool_call1, tool_call2],
         )
 
-        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(
+        processed, should_stop, result, feedbacks, _ = executor._execute_parsed_calls(
             parsed_response, agent_state, framework_context=make_framework_context(executor)
         )
 
@@ -1467,7 +1468,7 @@ class TestExecutorEdgeCases:
             tool_calls=[tool_call],
         )
 
-        processed, should_stop, result, feedbacks = executor._execute_parsed_calls(
+        processed, should_stop, result, feedbacks, _ = executor._execute_parsed_calls(
             parsed_response, agent_state, framework_context=make_framework_context(executor)
         )
 

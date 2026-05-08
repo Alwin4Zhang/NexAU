@@ -135,11 +135,21 @@ class FrameworkContext:
         root_run_id: str,
         _tool_registry: ToolRegistry,
         _shutdown_event: threading.Event,
+        session_id: str = "",
+        tool_name: str = "",
+        allow_rules: list[str] | None = None,
+        deny_rules: list[str] | None = None,
     ) -> None:
         self.agent_name = agent_name
         self.agent_id = agent_id
         self.run_id = run_id
         self.root_run_id = root_run_id
+
+        # RFC-0019: 权限数据字段
+        self.session_id = session_id
+        self.tool_name = tool_name
+        self.allow_rules: list[str] = allow_rules if allow_rules is not None else ["**"]
+        self.deny_rules: list[str] = deny_rules if deny_rules is not None else []
 
         # 分组 API
         self.tools = ToolsAPI(
@@ -147,6 +157,36 @@ class FrameworkContext:
         )
         self.execution = ExecutionAPI(
             _shutdown_event=_shutdown_event,
+        )
+        # RFC-0019: 保留内部引用以便 for_tool_call 复用
+        self._tool_registry = _tool_registry
+        self._shutdown_event = _shutdown_event
+
+    def for_tool_call(
+        self,
+        *,
+        tool_name: str,
+        allow_rules: list[str],
+        deny_rules: list[str],
+    ) -> FrameworkContext:
+        """Create a per-tool-call context with tool-specific permission data.
+
+        RFC-0019: 每次 tool call 前构造独立 FrameworkContext
+
+        共享 ToolsAPI / ExecutionAPI 实例，但 permission 字段独立，
+        保证并行 tool call 之间不互相干扰。
+        """
+        return FrameworkContext(
+            agent_name=self.agent_name,
+            agent_id=self.agent_id,
+            run_id=self.run_id,
+            root_run_id=self.root_run_id,
+            _tool_registry=self._tool_registry,
+            _shutdown_event=self._shutdown_event,
+            session_id=self.session_id,
+            tool_name=tool_name,
+            allow_rules=allow_rules,
+            deny_rules=deny_rules,
         )
 
     @classmethod
@@ -158,6 +198,10 @@ class FrameworkContext:
         run_id: str = "test-run-id",
         root_run_id: str = "test-root-run-id",
         shutdown_event: threading.Event | None = None,
+        session_id: str = "",
+        tool_name: str = "",
+        allow_rules: list[str] | None = None,
+        deny_rules: list[str] | None = None,
     ) -> FrameworkContext:
         """Create a FrameworkContext for unit testing tool functions.
 
@@ -189,6 +233,10 @@ class FrameworkContext:
             root_run_id=root_run_id,
             _tool_registry=ToolRegistry(),
             _shutdown_event=shutdown_event or threading.Event(),
+            session_id=session_id,
+            tool_name=tool_name,
+            allow_rules=allow_rules,
+            deny_rules=deny_rules,
         )
 
     def __repr__(self) -> str:

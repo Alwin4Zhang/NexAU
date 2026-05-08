@@ -321,6 +321,7 @@ class TestTeamModeStopTools:
                 '{"content": "Asking user questions, waiting for user answers..."}',
                 hook_input.messages,
                 [],
+                [],
             )
 
         executor._process_xml_calls = MagicMock(side_effect=fake_process_xml_calls)
@@ -348,6 +349,7 @@ class TestTeamModeStopTools:
                 '{"result": "done"}',
                 hook_input.messages,
                 [],
+                [],
             )
 
         executor._process_xml_calls = MagicMock(side_effect=fake_process_xml_calls)
@@ -374,6 +376,7 @@ class TestTeamModeStopTools:
                 True,
                 '{"result": "done"}',
                 hook_input.messages,
+                [],
                 [],
             )
 

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from ..agent_state import AgentState
     from ..framework_context import FrameworkContext
 
+from nexau.archs.permissions.types import AskPermission, PermissionDenied
 from nexau.archs.sandbox.base_sandbox import BaseSandbox
 from nexau.archs.tool.tool import Tool
 from nexau.archs.tool.tool_registry import ToolRegistry
@@ -279,6 +280,9 @@ class ToolExecutor:
             else:
                 result = _execute_tool_call(call_params)
             logger.info(f"✅ Tool '{tool_name}' executed successfully")
+        except (AskPermission, PermissionDenied):
+            # RFC-0019: 权限异常不拦截，直接传播给 Executor 处理
+            raise
         except Exception as e:
             logger.error(f"❌ Tool '{tool_name}' execution failed: {e}")
             execution_error = e

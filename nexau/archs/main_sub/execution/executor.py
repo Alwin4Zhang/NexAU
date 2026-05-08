@@ -71,6 +71,12 @@ from nexau.archs.main_sub.tool_call_modes import (
     normalize_tool_call_mode,
 )
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
+from nexau.archs.permissions.types import (
+    AskOutcome,
+    AskPermission,
+    DenyOutcome,
+    PermissionDenied,
+)
 from nexau.archs.tool.tool import (
     StructuredToolDefinition,
     Tool,
@@ -113,6 +119,8 @@ class _AsyncIterationState:
     runtime_client: object | None
     custom_llm_client_provider: Callable[[str], object] | None
     origin_history: list[Message] | list[dict[str, object]]
+    # RFC-0019: 预加载的权限规则缓存
+    permission_cache: dict[str, tuple[list[str], list[str]]] | None = None
 
 
 class Executor:
@@ -177,6 +185,11 @@ class Executor:
         self.agent_name = agent_name
         self.agent_id = agent_id
         self.max_running_subagents = max_running_subagents
+
+        # RFC-0019: 存储 session 引用以便权限缓存加载 & pending 写入
+        self._session_manager = session_manager
+        self._user_id = user_id
+        self._session_id = session_id
 
         # Initialize components
         self.middleware_manager = self._build_middleware_manager(
@@ -269,6 +282,8 @@ class Executor:
         self._is_idle = False  # True when waiting for messages in team_mode
         self._is_waiting_for_user = False  # True when idle due to ask_user stop tool
         self._last_stop_tool_name: str | None = None  # 最近触发 stop 的工具名
+        self._consecutive_text_only_count: int = 0  # team_mode 连续纯文本回复计数
+        self._has_active_teammates: Callable[[], bool] | None = None  # AgentTeam 注入，判断是否有活跃 teammate
 
     def _wire_middleware_event_emitters(self) -> None:
         """Wire internal middleware emitters to the unified event callback when available."""
@@ -361,6 +376,18 @@ class Executor:
     def shutdown_event(self) -> threading.Event:
         """Public accessor for the shutdown event."""
         return self._shutdown_event
+
+    @property
+    def has_active_teammates(self) -> Callable[[], bool] | None:
+        return self._has_active_teammates
+
+    @has_active_teammates.setter
+    def has_active_teammates(self, value: Callable[[], bool] | None) -> None:
+        self._has_active_teammates = value
+
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        return self._tool_registry
 
     @property
     def has_running_executors(self) -> bool:
@@ -467,6 +494,46 @@ class Executor:
         self._is_waiting_for_user = False
         return not self.stop_signal
 
+    def _build_permission_cache_from_tools(self) -> dict[str, tuple[list[str], list[str]]]:
+        """Build permission cache from Tool.permissions (sync, no DB).
+
+        RFC-0019: sync execute() 路径的权限缓存构建
+
+        遍历 ToolRegistry 中所有 eager tools，从 YAML permissions 字段提取规则。
+        没有 permissions 的 tool 不加入 cache，查找时 fallback 到 (["**"], [])。
+        """
+        cache: dict[str, tuple[list[str], list[str]]] = {}
+        for tool in self._tool_registry.compute_eager_tools():
+            if tool.permissions:
+                cache[tool.name] = (
+                    tool.permissions.get("allow", []),
+                    tool.permissions.get("deny", []),
+                )
+        return cache
+
+    async def _build_permission_cache_async(self) -> dict[str, tuple[list[str], list[str]]]:
+        """Build permission cache from DB or Tool.permissions.
+
+        RFC-0019: async execute_async() 路径的权限缓存构建
+
+        优先从 DB 加载（包含 config 和 user 两种来源的规则），
+        无 session_manager 时 fallback 到 Tool.permissions。
+        permissions=None 的 tool 不参与权限体系，跳过 DB 查询直接放行。
+        """
+        if self._session_manager and self._user_id and self._session_id:
+            cache: dict[str, tuple[list[str], list[str]]] = {}
+            for tool in self._tool_registry.compute_eager_tools():
+                if tool.permissions is None:
+                    continue
+                allow, deny = await self._session_manager.load_permission_rules(
+                    user_id=self._user_id,
+                    session_id=self._session_id,
+                    tool_name=tool.name,
+                )
+                cache[tool.name] = (allow, deny)
+            return cache
+        return self._build_permission_cache_from_tools()
+
     def enqueue_message(self, message: dict[str, str]) -> None:
         """Enqueue a message to be processed during execution.
 
@@ -513,6 +580,9 @@ class Executor:
             _tool_registry=self._tool_registry,
             _shutdown_event=self._shutdown_event,
         )
+
+        # RFC-0019: 预加载权限规则缓存
+        permission_cache = self._build_permission_cache_from_tools()
 
         # RFC-0001: 标记 execute() 正在运行
         self._execution_done.clear()
@@ -758,10 +828,12 @@ class Executor:
                     stop_tool_result,
                     updated_messages,
                     execution_feedbacks,
+                    ask_outcomes,
                 ) = self._process_xml_calls(
                     after_model_hook_input,
                     custom_llm_client_provider=custom_llm_client_provider,
                     framework_context=framework_context,
+                    permission_cache=permission_cache,
                 )
 
                 # Update messages with any modifications from hooks
@@ -836,6 +908,31 @@ class Executor:
                     if token_trace_session is not None:
                         token_trace_session.append_messages([tool_result_feedback_message], mask_value=0)
 
+                # RFC-0019: Ask outcomes → 写入 pending_tool_calls，停止执行
+                if ask_outcomes:
+                    pending: dict[str, Any] = {
+                        outcome.tool_call_id: {
+                            "tool_name": outcome.tool_name,
+                            "prompt": outcome.prompt,
+                            "permission_key": outcome.permission_key,
+                            "parameters": outcome.parameters,
+                            "decision": None,
+                        }
+                        for outcome in ask_outcomes
+                    }
+                    if self._session_manager and self._user_id and self._session_id:
+                        import asyncio
+
+                        asyncio.run(
+                            self._session_manager.update_pending_tool_calls(
+                                user_id=self._user_id,
+                                session_id=self._session_id,
+                                pending_tool_calls=pending,
+                            )
+                        )
+                    force_stop_reason = AgentStopReason.PERMISSION_PENDING
+                    break
+
                 # Check if a stop tool was executed
                 if should_stop and len(self.queued_messages) == 0:
                     # RFC-0002: team_mode 下，仅「无更多 tool call」时继续等待，
@@ -851,6 +948,27 @@ class Executor:
                             force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
                             final_response = stop_tool_result
                             break
+                        # RFC-0002 补丁: 纯文本回复时，若无活跃 teammate 则注入提醒；
+                        # 若有活跃 teammate 则直接进入 _wait_for_messages 等待回信。
+                        if stop_tool_result is None:
+                            has_teammates = self._has_active_teammates() if self._has_active_teammates else False
+                            if not has_teammates:
+                                self._consecutive_text_only_count += 1
+                                if self._consecutive_text_only_count >= 3:
+                                    logger.warning(
+                                        "team_mode: agent produced 3 consecutive text-only responses with no active teammates, auto-exiting"
+                                    )
+                                    force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
+                                    final_response = processed_response
+                                    break
+                                nudge = Message.user(
+                                    "[System] You responded with text but did not call any tool. "
+                                    "If you are done, you MUST call `finish_team` with a summary. "
+                                    "If you need to do more work, call the appropriate tool."
+                                )
+                                messages.append(nudge)
+                                iteration += 1
+                                continue
                         # RFC-0002: team_mode 下无限等待新消息，不设超时。
                         # Leader 需要等待 teammate 完成工作（可能远超 120s），
                         # watchdog 负责检测全员空闲并唤醒 leader。
@@ -880,6 +998,8 @@ class Executor:
                         final_response = processed_response
                         break
 
+                if self.team_mode:
+                    self._consecutive_text_only_count = 0
                 iteration += 1
 
             # Add note if max iterations reached
@@ -1126,6 +1246,9 @@ class Executor:
             except Exception as e:
                 logger.warning(f"⚠️ Before-agent middleware execution failed: {e}")
 
+        # RFC-0019: 预加载权限规则缓存
+        state.permission_cache = await self._build_permission_cache_async()
+
     async def _execute_iteration_async(self, state: _AsyncIterationState) -> _IterationOutcome:
         """Execute one iteration of the main async loop.
 
@@ -1251,10 +1374,12 @@ class Executor:
             stop_tool_result,
             updated_messages,
             execution_feedbacks,
+            ask_outcomes,
         ) = await self._process_xml_calls_async(
             after_model_hook_input,
             custom_llm_client_provider=state.custom_llm_client_provider,
             framework_context=state.framework_context,
+            permission_cache=state.permission_cache,
         )
 
         state.messages = updated_messages
@@ -1268,6 +1393,27 @@ class Executor:
             processed_response=processed_response,
         )
 
+        # RFC-0019: Ask outcomes → 写入 pending_tool_calls，停止执行
+        if ask_outcomes:
+            pending: dict[str, Any] = {
+                outcome.tool_call_id: {
+                    "tool_name": outcome.tool_name,
+                    "prompt": outcome.prompt,
+                    "permission_key": outcome.permission_key,
+                    "parameters": outcome.parameters,
+                    "decision": None,
+                }
+                for outcome in ask_outcomes
+            }
+            if self._session_manager and self._user_id and self._session_id:
+                await self._session_manager.update_pending_tool_calls(
+                    user_id=self._user_id,
+                    session_id=self._session_id,
+                    pending_tool_calls=pending,
+                )
+            state.force_stop_reason = AgentStopReason.PERMISSION_PENDING
+            return _IterationOutcome.BREAK
+
         # 10. 停止条件判断
         if should_stop and len(self.queued_messages) == 0:
             return await self._handle_stop_condition_async(
@@ -1276,6 +1422,8 @@ class Executor:
                 processed_response=processed_response,
             )
 
+        if self.team_mode:
+            self._consecutive_text_only_count = 0
         state.iteration += 1
         return _IterationOutcome.CONTINUE
 
@@ -1363,6 +1511,27 @@ class Executor:
                 state.force_stop_reason = AgentStopReason.STOP_TOOL_TRIGGERED
                 state.final_response = stop_tool_result
                 return _IterationOutcome.BREAK
+
+            # RFC-0002 补丁: 纯文本回复时，若无活跃 teammate 则注入提醒；
+            # 若有活跃 teammate 则直接进入 _wait_for_messages 等待回信。
+            if stop_tool_result is None:
+                has_teammates = self._has_active_teammates() if self._has_active_teammates else False
+                if not has_teammates:
+                    self._consecutive_text_only_count += 1
+                    if self._consecutive_text_only_count >= 3:
+                        logger.warning("team_mode: agent produced 3 consecutive text-only responses with no active teammates, auto-exiting")
+                        state.force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
+                        state.final_response = processed_response
+                        return _IterationOutcome.BREAK
+                    nudge = Message.user(
+                        "[System] You responded with text but did not call any tool. "
+                        "If you are done, you MUST call `finish_team` with a summary. "
+                        "If you need to do more work, call the appropriate tool."
+                    )
+                    state.messages.append(nudge)
+                    state.iteration += 1
+                    return _IterationOutcome.CONTINUE
+
             self._mark_waiting_for_user()
             if isinstance(state.origin_history, HistoryList):
                 state.origin_history.replace_all(state.messages)
@@ -1423,7 +1592,8 @@ class Executor:
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         framework_context: FrameworkContext,
-    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]]]:
+        permission_cache: dict[str, tuple[list[str], list[str]]] | None = None,
+    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]], list[AskOutcome]]:
         """Async version of _process_xml_calls.
 
         Middleware hooks 通过 to_thread 调用（sync API），
@@ -1448,18 +1618,19 @@ class Executor:
 
         if not parsed_response or not parsed_response.has_calls():
             if force_continue:
-                return hook_input.original_response, False, None, current_messages, []
+                return hook_input.original_response, False, None, current_messages, [], []
             else:
-                return hook_input.original_response, True, None, current_messages, []
+                return hook_input.original_response, True, None, current_messages, [], []
 
         assert parsed_response is not None
-        processed_response, should_stop, stop_tool_result, execution_feedbacks = await self._execute_parsed_calls_async(
+        processed_response, should_stop, stop_tool_result, execution_feedbacks, ask_outcomes = await self._execute_parsed_calls_async(
             parsed_response,
             hook_input.agent_state,
             custom_llm_client_provider=custom_llm_client_provider,
             framework_context=framework_context,
+            permission_cache=permission_cache,
         )
-        return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks
+        return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks, ask_outcomes
 
     async def _execute_parsed_calls_async(
         self,
@@ -1468,7 +1639,8 @@ class Executor:
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         framework_context: FrameworkContext,
-    ) -> tuple[str, bool, str | None, list[dict[str, Any]]]:
+        permission_cache: dict[str, tuple[list[str], list[str]]] | None = None,
+    ) -> tuple[str, bool, str | None, list[dict[str, Any]], list[AskOutcome]]:
         """Async parallel tool/sub-agent execution via asyncio.gather.
 
         async tool → 直接 await tool.execute_async()
@@ -1478,10 +1650,10 @@ class Executor:
         processed_response = parsed_response.original_response
 
         if self._shutdown_event.is_set():
-            return processed_response, False, None, []
+            return processed_response, False, None, [], []
 
         if not parsed_response.tool_calls:
-            return processed_response, False, None, []
+            return processed_response, False, None, [], []
 
         parallel_execution_id = str(uuid.uuid4())
 
@@ -1539,14 +1711,27 @@ class Executor:
                         tc,
                         agent_state,
                         framework_context,
+                        permission_cache,
                     ),
                 )
 
             # ── Async tool: event loop 原生路径 ──
+            tool_call_id = tc.tool_call_id or f"tool_call_{uuid.uuid4()}"
+            converted_params: dict[str, Any] = {}
             try:
-                converted_params: dict[str, Any] = {}
                 for pn, pv in tc.parameters.items():
                     converted_params[pn] = self.tool_executor.convert_parameter_type(tc.tool_name, pn, pv)
+
+                # RFC-0019: per-tool-call FrameworkContext
+                if permission_cache is not None:
+                    allow_rules, deny_rules = permission_cache.get(tc.tool_name, (["**"], []))
+                    tool_ctx: FrameworkContext = framework_context.for_tool_call(
+                        tool_name=tc.tool_name,
+                        allow_rules=allow_rules,
+                        deny_rules=deny_rules,
+                    )
+                else:
+                    tool_ctx = framework_context
 
                 # get_sandbox 内部可能调用 sync session API，放到 to_thread 避免阻塞
                 sandbox: BaseSandbox | None = None
@@ -1571,7 +1756,7 @@ class Executor:
                 exec_params: dict[str, Any] = dict(tool_parameters)
                 exec_params["agent_state"] = agent_state
                 exec_params["sandbox"] = sandbox
-                exec_params["ctx"] = framework_context
+                exec_params["ctx"] = tool_ctx
 
                 # 获取 tracer 以生成 Langfuse span（与 sync 路径对齐）
                 tracer: BaseTracer | None = agent_state.get_global_value("tracer")
@@ -1607,6 +1792,9 @@ class Executor:
                         trace_ctx.set_outputs({"result": execution_result.raw_output})
                         trace_ctx.__exit__(None, None, None)
                         return ("tool", tc, (tc.tool_name, execution_result, False))
+                    except (AskPermission, PermissionDenied):
+                        trace_ctx.__exit__(None, None, None)
+                        raise
                     except Exception as e:
                         trace_ctx.set_outputs({"result": {"status": "error", "error": str(e), "error_type": type(e).__name__}})
                         trace_ctx.__exit__(type(e), e, e.__traceback__)
@@ -1625,6 +1813,36 @@ class Executor:
                         execution_error=None,
                     )
                     return ("tool", tc, (tc.tool_name, execution_result, False))
+            except AskPermission as e:
+                return (
+                    "tool",
+                    tc,
+                    (
+                        tc.tool_name,
+                        AskOutcome(
+                            tool_call_id=tool_call_id,
+                            tool_name=tc.tool_name,
+                            prompt=e.prompt,
+                            permission_key=e.permission_key,
+                            parameters=converted_params,
+                        ),
+                        False,
+                    ),
+                )
+            except PermissionDenied as e:
+                return (
+                    "tool",
+                    tc,
+                    (
+                        tc.tool_name,
+                        DenyOutcome(
+                            tool_call_id=tool_call_id,
+                            reason=e.reason,
+                            permission_key=e.permission_key,
+                        ),
+                        True,
+                    ),
+                )
             except Exception as e:
                 return ("tool", tc, (tc.tool_name, str(e), True))
 
@@ -1664,6 +1882,7 @@ class Executor:
         # 收集结果
         tool_results: list[str] = []
         execution_feedbacks: list[dict[str, Any]] = []
+        ask_outcomes: list[AskOutcome] = []
         stop_tool_detected = False
         stop_tool_result: str | None = None
 
@@ -1672,6 +1891,28 @@ class Executor:
             call_obj: ToolCall = entry[1]
             result_data: tuple[str, Any, bool] = entry[2]
             tool_name, result, is_error = result_data
+
+            # RFC-0019: 处理权限相关 outcome
+            if isinstance(result, AskOutcome):
+                ask_outcomes.append(result)
+                continue
+            if isinstance(result, DenyOutcome):
+                deny_msg = f"Permission denied: {result.reason}"
+                execution_feedbacks.append(
+                    {
+                        "call_type": call_type,
+                        "call": call_obj,
+                        "content": deny_msg,
+                        "output": {"status": "error", "error": deny_msg},
+                        "llm_tool_output": deny_msg,
+                        "is_error": True,
+                    }
+                )
+                should_append_xml = call_obj.source != "structured"
+                if should_append_xml:
+                    tool_results.append(f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{deny_msg}</error>\n</tool_result>\n")
+                continue
+
             raw_output, llm_tool_output = self._split_tool_outputs(result)
             result_str = self._serialize_llm_tool_output(llm_tool_output)
             execution_feedbacks.append(
@@ -1718,7 +1959,7 @@ class Executor:
         if tool_results:
             processed_response += "\n\n" + "\n\n".join(tool_results)
 
-        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks
+        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks, ask_outcomes
 
     def _store_token_trace(self, token_trace_session: TokenTraceSession | None) -> None:
         """Persist token trace data into shared trace memory."""
@@ -1808,7 +2049,8 @@ class Executor:
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         framework_context: FrameworkContext,
-    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]]]:
+        permission_cache: dict[str, tuple[list[str], list[str]]] | None = None,
+    ) -> tuple[str, bool, str | None, list[Message], list[dict[str, Any]], list[AskOutcome]]:
         """Process XML tool calls and sub-agent calls using two-phase approach.
 
         Args:
@@ -1816,7 +2058,7 @@ class Executor:
             messages: Current conversation history
 
         Returns:
-            Tuple of (processed_response, should_stop, stop_tool_result, updated_messages)
+            Tuple of (processed_response, should_stop, stop_tool_result, updated_messages, execution_feedbacks, ask_outcomes)
         """
         # Phase 1: Parse the response to extract all calls
         logger.info("📋 Phase 1: Parsing LLM response for all executable calls")
@@ -1844,26 +2086,27 @@ class Executor:
                 logger.info(
                     "🎣 No tool calls remaining, but hook requested force_continue. Agent will continue with feedback.",
                 )
-                return hook_input.original_response, False, None, current_messages, []
+                return hook_input.original_response, False, None, current_messages, [], []
             else:
                 # Normal behavior: no calls means stop
                 logger.info(
                     "🛑 No tool calls remaining, stopping.",
                 )
-                return hook_input.original_response, True, None, current_messages, []
+                return hook_input.original_response, True, None, current_messages, [], []
 
         # Phase 2: Execute all parsed calls
         logger.info(
             f"⚡ Phase 2: Executing {parsed_response.get_call_summary()}",
         )
         assert parsed_response is not None
-        processed_response, should_stop, stop_tool_result, execution_feedbacks = self._execute_parsed_calls(
+        processed_response, should_stop, stop_tool_result, execution_feedbacks, ask_outcomes = self._execute_parsed_calls(
             parsed_response,
             hook_input.agent_state,
             custom_llm_client_provider=custom_llm_client_provider,
             framework_context=framework_context,
+            permission_cache=permission_cache,
         )
-        return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks
+        return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks, ask_outcomes
 
     def _execute_parsed_calls(
         self,
@@ -1872,7 +2115,8 @@ class Executor:
         *,
         custom_llm_client_provider: Callable[[str], Any] | None = None,
         framework_context: FrameworkContext,
-    ) -> tuple[str, bool, str | None, list[dict[str, Any]]]:
+        permission_cache: dict[str, tuple[list[str], list[str]]] | None = None,
+    ) -> tuple[str, bool, str | None, list[dict[str, Any]], list[AskOutcome]]:
         """Execute all parsed calls in parallel.
 
         Args:
@@ -1880,7 +2124,7 @@ class Executor:
             agent_state: AgentState containing agent context and global storage
 
         Returns:
-            Tuple of (processed_response, should_stop, stop_tool_result)
+            Tuple of (processed_response, should_stop, stop_tool_result, execution_feedbacks, ask_outcomes)
         """
         processed_response = parsed_response.original_response
 
@@ -1889,11 +2133,11 @@ class Executor:
             logger.warning(
                 f"⚠️ Agent '{self.agent_name}' ({self.agent_id}) is shutting down, skipping new task execution",
             )
-            return processed_response, False, None, []
+            return processed_response, False, None, [], []
 
         # Execute tool calls in parallel
         if not parsed_response.tool_calls:
-            return processed_response, False, None, []
+            return processed_response, False, None, [], []
 
         executor_id = str(uuid.uuid4())
         parallel_execution_id = str(uuid.uuid4())
@@ -1938,6 +2182,7 @@ class Executor:
                     tool_call,
                     agent_state,
                     framework_context,
+                    permission_cache,
                 )
                 tool_futures[future] = ("tool", tool_call)
 
@@ -1950,6 +2195,7 @@ class Executor:
             # Collect results as they complete
             tool_results: list[str] = []
             execution_feedbacks: list[dict[str, Any]] = []
+            ask_outcomes: list[AskOutcome] = []
             stop_tool_detected = False
             stop_tool_result = None
 
@@ -1958,6 +2204,35 @@ class Executor:
                 try:
                     result_data = future.result()
                     tool_name, result, is_error = result_data
+
+                    # RFC-0019: 处理权限相关 outcome
+                    if isinstance(result, AskOutcome):
+                        ask_outcomes.append(result)
+                        continue
+                    if isinstance(result, DenyOutcome):
+                        deny_msg = f"Permission denied: {result.reason}"
+                        execution_feedbacks.append(
+                            {
+                                "call_type": "tool",
+                                "call": call_obj,
+                                "content": deny_msg,
+                                "output": {"status": "error", "error": deny_msg},
+                                "llm_tool_output": deny_msg,
+                                "is_error": True,
+                            },
+                        )
+                        should_append_xml = call_obj.source != "structured"
+                        if should_append_xml:
+                            tool_results.append(
+                                f"""
+<tool_result>
+<tool_name>{tool_name}</tool_name>
+<error>{deny_msg}</error>
+</tool_result>
+""",
+                            )
+                        continue
+
                     raw_output, llm_tool_output = self._split_tool_outputs(result)
                     result_str = self._serialize_llm_tool_output(llm_tool_output)
                     execution_feedbacks.append(
@@ -2045,7 +2320,7 @@ class Executor:
                 finally:
                     self._running_executors.pop(f"{executor_id}_tools", None)
 
-        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks
+        return processed_response, stop_tool_detected, stop_tool_result, execution_feedbacks, ask_outcomes
 
     @staticmethod
     def _tool_not_found_msg(tool_name: str) -> str:
@@ -2096,20 +2371,24 @@ class Executor:
         tool_call: ToolCall,
         agent_state: "AgentState",
         framework_context: FrameworkContext,
+        permission_cache: dict[str, tuple[list[str], list[str]]] | None = None,
     ) -> tuple[str, Any, bool]:
-        """Safely execute a tool call."""
+        """Safely execute a tool call.
+
+        RFC-0019: 每次 tool call 构造独立 FrameworkContext，
+        捕获 AskPermission / PermissionDenied 返回对应 Outcome。
+        """
         # Early check: emit error result event if tool is not registered.
-        # tool_executor.execute_tool_with_llm_output raises ValueError for
-        # missing tools, but that exception is caught by the broad except below
-        # which bypasses after_tool hooks (and ToolCallResultEvent emission).
         if self._tool_registry.get_tool(tool_call.tool_name) is None:
             error_msg = self._tool_not_found_msg(tool_call.tool_name)
             self._emit_tool_error_result(tool_call, error_msg, agent_state)
             return (tool_call.tool_name, error_msg, True)
 
+        tool_call_id = tool_call.tool_call_id or f"tool_call_{uuid.uuid4()}"
+        converted_params: dict[str, Any] = {}
+
         try:
             # Convert parameters to correct types and execute
-            converted_params: dict[str, Any] = {}
             for param_name, param_value in tool_call.parameters.items():
                 converted_params[param_name] = self.tool_executor.convert_parameter_type(
                     tool_call.tool_name,
@@ -2117,18 +2396,50 @@ class Executor:
                     param_value,
                 )
 
-            tool_call_id = tool_call.tool_call_id or f"tool_call_{uuid.uuid4()}"
+            # RFC-0019: per-tool-call FrameworkContext
+            if permission_cache is not None:
+                allow_rules, deny_rules = permission_cache.get(tool_call.tool_name, (["**"], []))
+                tool_ctx = framework_context.for_tool_call(
+                    tool_name=tool_call.tool_name,
+                    allow_rules=allow_rules,
+                    deny_rules=deny_rules,
+                )
+            else:
+                tool_ctx = framework_context
+
             result = self.tool_executor.execute_tool_with_llm_output(
                 agent_state,
                 tool_call.tool_name,
                 converted_params,
                 tool_call_id=tool_call_id,
                 parallel_execution_id=tool_call.parallel_execution_id,
-                framework_context=framework_context,
+                framework_context=tool_ctx,
             )
 
             return (tool_call.tool_name, result, False)
 
+        except AskPermission as e:
+            return (
+                tool_call.tool_name,
+                AskOutcome(
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_call.tool_name,
+                    prompt=e.prompt,
+                    permission_key=e.permission_key,
+                    parameters=converted_params,
+                ),
+                False,
+            )
+        except PermissionDenied as e:
+            return (
+                tool_call.tool_name,
+                DenyOutcome(
+                    tool_call_id=tool_call_id,
+                    reason=e.reason,
+                    permission_key=e.permission_key,
+                ),
+                True,
+            )
         except Exception as e:
             return tool_call.tool_name, str(e), True
 

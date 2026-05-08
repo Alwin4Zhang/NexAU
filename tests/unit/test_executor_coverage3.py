@@ -470,7 +470,7 @@ class TestHandleStopConditionAsync:
         ):
             result = await executor._handle_stop_condition_async(
                 state,
-                stop_tool_result=None,
+                stop_tool_result="stopped",
                 processed_response="resp",
             )
 
@@ -507,7 +507,7 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert feedbacks[0]["call_type"] == "tool"
         assert feedbacks[0].get("is_error") is not True
@@ -537,7 +537,7 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert feedbacks[0]["is_error"] is True
         assert "sandbox boom" in feedbacks[0]["content"]
@@ -572,7 +572,7 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, should_stop, stop_tool_result, feedbacks = result
+        _, should_stop, stop_tool_result, feedbacks, _ = result
         assert should_stop is True
         assert stop_tool_result is not None
 
@@ -646,7 +646,7 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert mw.before_tool_called is True
         assert mw.after_tool_called is True
@@ -681,7 +681,7 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, _, _, feedbacks = result
+        _, _, _, feedbacks, _ = result
         assert len(feedbacks) >= 1
         assert feedbacks[0].get("is_error") is not True
 
@@ -725,6 +725,6 @@ class TestExecuteParsedCallsAsyncTool:
                 framework_context=framework_context,
             )
 
-        _, should_stop, stop_tool_result, feedbacks = result
+        _, should_stop, stop_tool_result, feedbacks, _ = result
         # _is_stop_tool cleared by line 1569 because status was "error"
         assert should_stop is False

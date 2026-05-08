@@ -78,3 +78,7 @@ class SessionModel(SQLModel, table=True):
 
     # Root agent ID (for quick access to main agent)
     root_agent_id: str | None = Field(default=None)
+
+    # RFC-0019: Ask 状态 JSON 字段
+    # None = 没有未决 ask; dict keyed by tool_call_id = awaiting_permission
+    pending_tool_calls: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))

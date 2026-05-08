@@ -31,6 +31,7 @@ This module exports all model definitions for session storage:
 from .agent import AgentModel
 from .agent_lock import AgentLockModel
 from .agent_run_action_model import AgentRunActionModel, RunActionType
+from .permission_rule import PermissionRuleModel
 from .session import SessionModel
 from .team import TeamModel
 from .team_member import TeamMemberModel
@@ -44,6 +45,7 @@ __all__ = [
     "AgentLockModel",
     "AgentRunActionModel",
     "RunActionType",
+    "PermissionRuleModel",
     "TeamModel",
     "TeamMemberModel",
     "TeamMessageModel",

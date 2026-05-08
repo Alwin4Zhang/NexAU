@@ -1,0 +1,44 @@
+type: tool
+name: multiedit_tool
+description: >-
+  Make multiple find-and-replace edits to a single file in one atomic
+  operation. All edits are applied in sequence — either all succeed or none
+  are applied.
+
+  Usage notes:
+    - Each edit specifies old_string (exact match) and new_string
+    - Set replace_all to true to replace every occurrence
+    - The file must exist and old_string must be found
+    - Prefer this over multiple replace calls when editing the same file
+
+input_schema:
+  type: object
+  properties:
+    file_path:
+      type: string
+      description: The absolute path to the file to modify.
+    edits:
+      type: array
+      description: Array of edit operations to apply in sequence.
+      items:
+        type: object
+        properties:
+          old_string:
+            type: string
+            description: The text to find (must match exactly, including whitespace).
+          new_string:
+            type: string
+            description: The replacement text.
+          replace_all:
+            type: boolean
+            description: >-
+              (OPTIONAL) Replace all occurrences. Default: false.
+        required:
+          - old_string
+          - new_string
+        additionalProperties: false
+  required:
+    - file_path
+    - edits
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

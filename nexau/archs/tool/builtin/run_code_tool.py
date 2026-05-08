@@ -18,10 +18,14 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.permissions.helpers import check_permission
 from nexau.archs.sandbox import BaseSandbox, SandboxStatus
+
+if TYPE_CHECKING:
+    from nexau.archs.main_sub.framework_context import FrameworkContext
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,7 @@ def run_code_tool(
     timeout: int | None = None,
     description: str | None = None,
     agent_state: AgentState | None = None,
+    ctx: FrameworkContext | None = None,
 ) -> ExecutionResult:
     """
     Execute Python code using sandbox adaptor.
@@ -56,6 +61,7 @@ def run_code_tool(
         timeout: Optional timeout in milliseconds (max 600000ms / 10 minutes)
         description: Clear, concise description of what this code does
         agent_state: AgentState containing agent context and global storage
+        ctx: FrameworkContext for permission checking (RFC-0019)
 
     Returns:
         Dict containing execution results including stdout, stderr, and exit code
@@ -67,6 +73,10 @@ def run_code_tool(
             agent_state=agent_state
         )
     """
+    # CC 对齐: 代码执行等同于 shell，需要权限检查
+    if ctx is not None:
+        check_permission(ctx, "code_execution", "允许执行代码吗?")
+
     start_time = time.time()
 
     # Get sandbox instance

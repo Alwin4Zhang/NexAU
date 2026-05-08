@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from nexau.archs.main_sub.framework_context import FrameworkContext
     from nexau.archs.main_sub.team.state import AgentTeamState
 
 import anthropic
@@ -61,6 +62,7 @@ from nexau.archs.main_sub.tool_call_modes import (
 )
 from nexau.archs.main_sub.utils.cleanup_manager import cleanup_manager
 from nexau.archs.main_sub.utils.token_counter import TokenCounter
+from nexau.archs.permissions.types import PendingPermissionsError
 from nexau.archs.sandbox import (
     BaseSandbox,
     BaseSandboxManager,
@@ -1019,6 +1021,17 @@ class Agent:
         if self.executor.llm_caller.async_openai_client is None:
             self.executor.llm_caller.async_openai_client = self._initialize_async_openai_client()
 
+        # RFC-0019: 硬拦 — 未决权限请求时禁止启动新 run
+        pending = await self._session_manager.get_pending_tool_calls(
+            user_id=self._user_id,
+            session_id=self._session_id,
+        )
+        if pending and any(v.get("decision") is None for v in pending.values()):
+            raise PendingPermissionsError(
+                session_id=self._session_id,
+                pending=pending,
+            )
+
         logger.info(f"🤖 Agent '{self.config.name}' starting execution")
         message_text_for_logs = (
             message
@@ -1220,6 +1233,22 @@ class Agent:
                 subagent_manager=self.executor.subagent_manager,
                 skill_registry=self.skill_registry,
             )
+
+            # RFC-0019: Resume — 所有决策已解决时恢复执行
+            if pending and all(v.get("decision") is not None for v in pending.values()):
+                from nexau.archs.main_sub.framework_context import FrameworkContext
+
+                resume_ctx = FrameworkContext(
+                    agent_name=self.agent_name,
+                    agent_id=self.agent_id,
+                    run_id=run_id,
+                    root_run_id=root_run_id,
+                    _tool_registry=self._tool_registry,
+                    _shutdown_event=self.executor.shutdown_event,
+                    session_id=self._session_id,
+                )
+                await self._resume_pending_tool_calls(pending, agent_state, resume_ctx)
+                self.history.flush()
 
             # Execute with or without tracing
             try:
@@ -1449,6 +1478,155 @@ class Agent:
                 self.history.flush()
             except Exception:
                 logger.warning("Failed to flush history in finally block")
+
+    async def resolve_permission(
+        self,
+        tool_call_id: str,
+        decision: str,
+    ) -> None:
+        """Resolve a pending permission request.
+
+        RFC-0019: 用户决策接口
+
+        更新 pending_tool_calls 中指定 tool_call 的 decision 字段。
+        若 decision 为 "allow"，同时将 permission_key 写入永久 allow 规则。
+
+        Args:
+            tool_call_id: The tool_call_id to resolve
+            decision: One of "allow", "allow_once", "deny"
+        """
+        pending = await self._session_manager.get_pending_tool_calls(
+            user_id=self._user_id,
+            session_id=self._session_id,
+        )
+        if pending is None or tool_call_id not in pending:
+            raise ValueError(f"No pending permission request for tool_call_id={tool_call_id}")
+
+        entry = pending[tool_call_id]
+        entry["decision"] = decision
+
+        # "allow" → 追加永久规则到 DB，后续同 key 自动通过
+        if decision == "allow":
+            await self._session_manager.save_permission_rule(
+                user_id=self._user_id,
+                session_id=self._session_id,
+                tool_name=entry["tool_name"],
+                rule_content=entry["permission_key"],
+                behavior="allow",
+                source="user",
+            )
+
+        await self._session_manager.update_pending_tool_calls(
+            user_id=self._user_id,
+            session_id=self._session_id,
+            pending_tool_calls=pending,
+        )
+
+    async def _resume_pending_tool_calls(
+        self,
+        pending: dict[str, Any],
+        agent_state: AgentState,
+        framework_context: "FrameworkContext",
+    ) -> None:
+        """Resume execution after all pending permissions are resolved.
+
+        RFC-0019: Resume 逻辑
+
+        遍历 pending entries：
+        - allow / allow_once → 重新调用 tool
+        - deny → 合成 denial ToolResult
+        处理完毕后清除 pending_tool_calls。
+        """
+        from nexau.archs.main_sub.framework_context import FrameworkContext
+        from nexau.core.messages import ToolResultBlock, coerce_tool_result_content
+
+        for tool_call_id, entry in pending.items():
+            if entry.get("consumed"):
+                continue
+
+            decision = entry.get("decision")
+            tool_name = entry["tool_name"]
+            parameters = entry.get("parameters", {})
+
+            if decision == "deny":
+                # 合成 denial ToolResult
+                denial_content = f"Permission denied by user for {tool_name}"
+                tool_result_block = ToolResultBlock(
+                    tool_use_id=tool_call_id,
+                    content=coerce_tool_result_content(denial_content, fallback_text=None),
+                    is_error=True,
+                )
+                self.history.append(Message(role=Role.TOOL, content=[tool_result_block]))
+            elif decision in ("allow", "allow_once"):
+                # 重新调用 tool
+                tool_obj = self.executor.tool_registry.get_tool(tool_name)
+                if tool_obj is None:
+                    error_content = f"Tool '{tool_name}' not found during resume"
+                    tool_result_block = ToolResultBlock(
+                        tool_use_id=tool_call_id,
+                        content=coerce_tool_result_content(error_content, fallback_text=None),
+                        is_error=True,
+                    )
+                    self.history.append(Message(role=Role.TOOL, content=[tool_result_block]))
+                else:
+                    # 构造 per-tool-call context：allow_once 临时添加 permission_key
+                    permission_key = entry.get("permission_key", "")
+                    if decision == "allow_once":
+                        tool_ctx: FrameworkContext = framework_context.for_tool_call(
+                            tool_name=tool_name,
+                            allow_rules=[permission_key],
+                            deny_rules=[],
+                        )
+                    else:
+                        # allow → 规则已写入 DB，使用 ["**"] 直接放行
+                        tool_ctx = framework_context.for_tool_call(
+                            tool_name=tool_name,
+                            allow_rules=["**"],
+                            deny_rules=[],
+                        )
+
+                    try:
+                        exec_params: dict[str, Any] = dict(parameters)
+                        exec_params["agent_state"] = agent_state
+                        exec_params["sandbox"] = agent_state.get_sandbox()
+                        exec_params["ctx"] = tool_ctx
+
+                        # MCPTool 等拥有原生 async 实现的工具必须走 async 路径
+                        if getattr(tool_obj, "_has_native_async_execute", False):
+                            result = await tool_obj.execute_async(**exec_params)
+                        else:
+                            result = tool_obj.execute(**exec_params)
+
+                        content_str = str(result)
+                        tool_result_block = ToolResultBlock(
+                            tool_use_id=tool_call_id,
+                            content=coerce_tool_result_content(content_str, fallback_text=None),
+                            is_error=False,
+                        )
+                        self.history.append(Message(role=Role.TOOL, content=[tool_result_block]))
+                    except Exception as e:
+                        error_content = f"Tool '{tool_name}' failed during resume: {e}"
+                        tool_result_block = ToolResultBlock(
+                            tool_use_id=tool_call_id,
+                            content=coerce_tool_result_content(error_content, fallback_text=None),
+                            is_error=True,
+                        )
+                        self.history.append(Message(role=Role.TOOL, content=[tool_result_block]))
+
+            entry["consumed"] = True
+            # RFC-0019: 每条 tool 执行后立即持久化 consumed 状态，防止崩溃后重复执行
+            await self._session_manager.update_pending_tool_calls(
+                user_id=self._user_id,
+                session_id=self._session_id,
+                pending_tool_calls=pending,
+            )
+
+        # 清除 pending_tool_calls
+        await self._session_manager.update_pending_tool_calls(
+            user_id=self._user_id,
+            session_id=self._session_id,
+            pending_tool_calls=None,
+        )
 
     def add_tool(self, tool: Tool) -> None:
         """Add a tool to the agent."""

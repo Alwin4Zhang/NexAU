@@ -13,6 +13,7 @@ from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
 from nexau.archs.main_sub.framework_context import ExecutionAPI, FrameworkContext
+from nexau.archs.permissions.helpers import check_shell_permission
 from nexau.archs.sandbox import BaseSandbox, CommandResult, SandboxStatus
 from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 
@@ -173,6 +174,9 @@ def run_shell_command(
     Returns:
         Dict with content and returnDisplay matching gemini-cli format
     """
+    # RFC-0019: 权限检查（在任何资源分配之前）
+    check_shell_permission(ctx, command)
+
     try:
         # Validate command
         if not command or not command.strip():

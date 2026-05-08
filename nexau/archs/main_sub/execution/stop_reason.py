@@ -25,3 +25,4 @@ class AgentStopReason(Enum):
     SUCCESS = auto()
     NO_MORE_TOOL_CALLS = auto()
     USER_INTERRUPTED = auto()
+    PERMISSION_PENDING = auto()

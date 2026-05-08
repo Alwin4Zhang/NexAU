@@ -1,0 +1,46 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-8.4.1, pluggy-1.6.0 -- /Users/pcj/coding_dev/NexAU/.venv/bin/python
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /Users/pcj/coding_dev/NexAU
+configfile: pytest.ini
+plugins: hypothesis-6.150.2, xdist-3.8.0, timeout-2.4.0, anyio-4.10.0, cov-7.0.0
+timeout: 120.0s
+timeout method: signal
+timeout func_only: False
+collecting ... collected 38 items / 6 deselected / 32 selected
+
+tests/e2e/test_cc_agent_permission_e2e.py::TestReadonlyAutoAllow::test_read_file PASSED [  3%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestReadonlyAutoAllow::test_list_directory PASSED [  6%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestReadonlyAutoAllow::test_glob PASSED [  9%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestReadonlyAutoAllow::test_search_file_content PASSED [ 12%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestReadonlyAutoAllow::test_shell_ls_auto_allow PASSED [ 15%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestReadonlyAutoAllow::test_shell_cat_auto_allow PASSED [ 18%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestReadonlyAutoAllow::test_shell_git_log_auto_allow PASSED [ 21%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestReadonlyAutoAllow::test_shell_git_status_auto_allow PASSED [ 25%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestEmptyRulesAsk::test_write_file_ask PASSED [ 28%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestEmptyRulesAsk::test_replace_ask PASSED [ 31%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestEmptyRulesAsk::test_multiedit_ask PASSED [ 34%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestEmptyRulesAsk::test_apply_patch_ask PASSED [ 37%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestEmptyRulesAsk::test_shell_write_command_ask PASSED [ 40%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestEmptyRulesAsk::test_shell_git_push_ask PASSED [ 43%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestEmptyRulesAsk::test_shell_pipeline_ask PASSED [ 46%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestEmptyRulesAsk::test_run_code_ask PASSED [ 50%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestEmptyRulesAsk::test_webfetch_ask PASSED [ 53%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestAllowRulesPass::test_write_file_with_allow PASSED [ 56%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestAllowRulesPass::test_replace_with_allow PASSED [ 59%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestAllowRulesPass::test_shell_with_allow PASSED [ 62%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestAllowRulesPass::test_webfetch_with_allow PASSED [ 65%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestAllowRulesPass::test_run_code_with_allow PASSED [ 68%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestDenyRulesBlocked::test_write_file_denied PASSED [ 71%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestDenyRulesBlocked::test_shell_denied PASSED [ 75%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestDenyRulesBlocked::test_webfetch_denied PASSED [ 78%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestWildcardAllowAll::test_write_file_wildcard PASSED [ 81%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestWildcardAllowAll::test_shell_wildcard PASSED [ 84%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestProtectedPaths::test_git_dir_ask_despite_wildcard PASSED [ 87%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestFullLifecycle::test_ask_resolve_allow_resume PASSED [ 90%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestFullLifecycle::test_ask_resolve_deny_resume PASSED [ 93%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestPersistentAllow::test_second_call_auto_passes PASSED [ 96%]
+tests/e2e/test_cc_agent_permission_e2e.py::TestMixedParallel::test_readonly_and_write_parallel PASSED [100%]
+
+================= 32 passed, 6 deselected in 252.10s (0:04:12) =================

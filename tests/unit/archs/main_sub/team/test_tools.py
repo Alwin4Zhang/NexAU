@@ -264,7 +264,7 @@ class TestFinishTeam:
 
         asyncio.run(run())
 
-    def test_finish_blocked_by_running_teammates(self):
+    def test_finish_stops_running_teammates_then_succeeds(self):
         async def run():
             task_board = MagicMock()
             task_board.list_tasks = AsyncMock(return_value=[])
@@ -272,6 +272,7 @@ class TestFinishTeam:
             running_teammate = TeammateInfo(agent_id="agent1", role_name="researcher", status="running")
             team = MagicMock()
             team.get_teammate_info = MagicMock(return_value=[running_teammate])
+            team.stop_all_teammates = AsyncMock()
 
             state = make_agent_state(
                 agent_id="leader",
@@ -282,13 +283,13 @@ class TestFinishTeam:
 
             result = await finish_team(summary="done", agent_state=state)
 
-            assert isinstance(result, ToolError)
-            assert result.code == "invalid_state"
-            assert "running teammate" in result.error
+            team.stop_all_teammates.assert_awaited_once()
+            assert isinstance(result, FinishTeamResult)
+            assert result.summary == "done"
 
         asyncio.run(run())
 
-    def test_finish_blocked_by_both_incomplete_and_running(self):
+    def test_finish_stops_teammates_but_blocked_by_incomplete(self):
         async def run():
             pending_task = make_task_info(task_id="T-001", status="in_progress")
             task_board = MagicMock()
@@ -297,6 +298,7 @@ class TestFinishTeam:
             running_teammate = TeammateInfo(agent_id="agent1", role_name="coder", status="running")
             team = MagicMock()
             team.get_teammate_info = MagicMock(return_value=[running_teammate])
+            team.stop_all_teammates = AsyncMock()
 
             state = make_agent_state(
                 agent_id="leader",
@@ -307,11 +309,10 @@ class TestFinishTeam:
 
             result = await finish_team(summary="done", agent_state=state)
 
+            team.stop_all_teammates.assert_awaited_once()
             assert isinstance(result, ToolError)
             assert result.code == "invalid_state"
-            # Both reasons should appear
             assert "incomplete" in result.error
-            assert "running teammate" in result.error
 
         asyncio.run(run())
 

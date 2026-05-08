@@ -14,13 +14,19 @@
 
 """MultiEdit tool implementation for making multiple edits to a single file."""
 
+from __future__ import annotations
+
 import logging
 import time
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.permissions.helpers import check_path_permission
 from nexau.archs.sandbox import BaseSandbox, SandboxStatus
+
+if TYPE_CHECKING:
+    from nexau.archs.main_sub.framework_context import FrameworkContext
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +65,7 @@ def multiedit_tool(
     file_path: str,
     edits: list[EditPayload],
     agent_state: AgentState,
+    ctx: FrameworkContext | None = None,
 ) -> dict[str, Any]:
     """
     Make multiple edits to a single file in one operation.
@@ -78,6 +85,10 @@ def multiedit_tool(
         Dict containing the result of the operation
     """
     start_time = time.time()
+
+    # RFC-0019: 路径级权限检查
+    if ctx is not None:
+        check_path_permission(ctx, file_path)
 
     # Get sandbox instance
     sandbox: BaseSandbox | None = agent_state.get_sandbox()

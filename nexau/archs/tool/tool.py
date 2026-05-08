@@ -39,6 +39,8 @@ import yaml
 from jsonschema.validators import validator_for
 from pydantic import BaseModel, ConfigDict, Field
 
+from nexau.archs.permissions.types import AskPermission, PermissionDenied
+
 from .formatters import ToolFormatter, ToolFormatterContext, resolve_tool_formatter
 
 if TYPE_CHECKING:
@@ -254,6 +256,7 @@ class Tool:
         formatter: str | ToolFormatter | None = None,
         extra_kwargs: dict[str, Any] | None = None,
         source_name: str | None = None,
+        permissions: dict[str, list[str]] | None = None,
     ):
         """Initialize a tool with schema and implementation."""
         self.name = name
@@ -291,6 +294,9 @@ class Tool:
             )
         self.extra_kwargs = extra_kwargs
 
+        # RFC-0019: 权限规则配置
+        self.permissions = permissions
+
         # 子类（如 MCPTool）可重写此属性为 True，表示其 execute_async()
         # 有独立的原生 async 实现，executor 应直接 await 而非走
         # to_thread → sync execute → asyncio.run 的间接路径。
@@ -313,6 +319,7 @@ class Tool:
         description: str | None = None,
         description_suffix: str = "",
         defer_loading: bool | None = None,
+        permissions: dict[str, list[str]] | None = None,
     ) -> Tool:
         """Load tool definition from YAML file and bind to implementation."""
         path = Path(yaml_path)
@@ -380,6 +387,7 @@ class Tool:
             template_override=template_override,
             formatter=formatter,
             extra_kwargs=extra_kwargs,
+            permissions=permissions,
         )
 
     def resolve_formatter(self) -> ToolFormatter:
@@ -611,6 +619,9 @@ class Tool:
 
             return final_result
 
+        except (AskPermission, PermissionDenied):
+            # RFC-0019: 权限异常不拦截，直接传播给 Executor 处理
+            raise
         except Exception as e:
             # Return error information
             return {
@@ -702,6 +713,9 @@ class Tool:
 
             return final_result
 
+        except (AskPermission, PermissionDenied):
+            # RFC-0019: 权限异常不拦截，直接传播给 Executor 处理
+            raise
         except Exception as e:
             # Return error information
             return {

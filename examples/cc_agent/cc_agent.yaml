@@ -1,0 +1,173 @@
+type: agent
+name: nexau_cc_agent
+max_context_tokens: 200000
+system_prompt: ./systemprompt.md
+tool_call_mode: structured
+max_iterations: 300
+
+llm_config:
+  model: ${env.LLM_MODEL}
+  base_url: ${env.LLM_BASE_URL}
+  api_key: ${env.LLM_API_KEY}
+  max_tokens: 32000
+  stream: True
+  temperature: 1
+  api_type: openai_chat_completion
+
+# ---------------------------------------------------------------------------
+# Tools — CC-aligned permission model (RFC-0019)
+#
+# Permission semantics:
+#   no permissions → auto-allow (readonly tools)
+#   permissions.allow / deny → three-state check (allow / ask / deny)
+# ---------------------------------------------------------------------------
+
+sub_agents:
+  - name: explore
+    config_path: sub_agent.yaml
+
+tools:
+  # ── Readonly tools: no permissions → unconditional allow ──
+
+  - name: read_file
+    yaml_path: ./tools/read_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:read_file
+
+  - name: read_many_files
+    yaml_path: ./tools/read_many_files.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:read_many_files
+
+  - name: read_visual_file
+    yaml_path: ./tools/read_visual_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:read_visual_file
+
+  - name: glob
+    yaml_path: ./tools/glob.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:glob
+
+  - name: list_directory
+    yaml_path: ./tools/list_directory.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:list_directory
+
+  - name: search_file_content
+    yaml_path: ./tools/search_file_content.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:search_file_content
+
+  - name: web_search
+    yaml_path: ./tools/WebSearch.tool.yaml
+    binding: nexau.archs.tool.builtin.web_tools:google_web_search
+
+  # ── File write tools: path-level, all ask (CC-aligned: no hardcoded deny) ──
+
+  - name: write_file
+    yaml_path: ./tools/write_file.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:write_file
+    permissions:
+      allow: []
+      deny: []
+
+  - name: replace
+    yaml_path: ./tools/replace.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:replace
+    permissions:
+      allow: []
+      deny: []
+
+  - name: apply_patch
+    yaml_path: ./tools/apply_patch.tool.yaml
+    binding: nexau.archs.tool.builtin.file_tools:apply_patch
+    permissions:
+      allow: []
+      deny: []
+
+  - name: multiedit_tool
+    yaml_path: ./tools/multiedit_tool.tool.yaml
+    binding: nexau.archs.tool.builtin.multiedit_tool:multiedit_tool
+    permissions:
+      allow: []
+      deny: []
+
+  # ── Shell: readonly whitelist auto-allow, all else ask (CC-aligned: no hardcoded deny) ──
+
+  - name: run_shell_command
+    yaml_path: ./tools/run_shell_command.tool.yaml
+    binding: nexau.archs.tool.builtin.shell_tools:run_shell_command
+    permissions:
+      allow: []
+      deny: []
+
+  - name: BackgroundTaskManage
+    yaml_path: ./tools/BackgroundTaskManage.tool.yaml
+    binding: nexau.archs.tool.builtin:background_task_manage_tool
+
+  # ── Code execution: every call requires permission ──
+
+  - name: run_code_tool
+    yaml_path: ./tools/run_code_tool.tool.yaml
+    binding: nexau.archs.tool.builtin.run_code_tool:run_code_tool
+    permissions:
+      allow: []
+      deny: []
+
+  # ── Web fetch: domain-level allow / deny ──
+
+  - name: web_fetch
+    yaml_path: ./tools/WebFetch.tool.yaml
+    binding: nexau.archs.tool.builtin.web_tools:web_fetch
+    permissions:
+      allow: []
+      deny: []
+
+  # ── Session tools: no permissions → auto-allow ──
+
+  - name: save_memory
+    yaml_path: ./tools/save_memory.tool.yaml
+    binding: nexau.archs.tool.builtin.session_tools:save_memory
+
+  - name: write_todos
+    yaml_path: ./tools/write_todos.tool.yaml
+    binding: nexau.archs.tool.builtin.session_tools:write_todos
+
+  - name: complete_task
+    yaml_path: ./tools/complete_task.tool.yaml
+    binding: nexau.archs.tool.builtin.session_tools:complete_task
+
+  - name: ask_user
+    yaml_path: ./tools/ask_user.tool.yaml
+    binding: nexau.archs.tool.builtin.session_tools:ask_user
+
+# ── MCP servers: tools discovered at startup, default always-ask (RFC-0019) ──
+
+mcp_servers:
+  - name: filesystem
+    type: stdio
+    command: npx
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/private/tmp/nexau_perm_test/workspace']
+    timeout: 30
+    permissions:
+      allow: []
+      deny: []
+
+skills:
+  - ./skills/skill-creator
+  - ./skills/template-skill
+
+stop_tools: [complete_task]
+
+middlewares:
+  - import: nexau.archs.main_sub.execution.middleware.long_tool_output:LongToolOutputMiddleware
+    params:
+      max_output_chars: 10000
+      head_lines: 50
+      tail_lines: 30
+      head_chars: 5000
+      tail_chars: 5000
+      bypass_tool_names:
+        - run_shell_command
+
+tracers:
+  - import: nexau.archs.tracer.adapters.langfuse:LangfuseTracer
+    params:
+      public_key: ${env.LANGFUSE_PUBLIC_KEY}
+      secret_key: ${env.LANGFUSE_SECRET_KEY}
+      host: ${env.LANGFUSE_HOST}

@@ -1,0 +1,33 @@
+type: tool
+name: run_code_tool
+description: >-
+  Execute Python code in a sandboxed environment. Returns stdout, stderr, and
+  exit code. Use this for running Python scripts, data analysis, or testing
+  code snippets.
+
+  Usage notes:
+    - Code runs in an isolated sandbox (not the host machine)
+    - Default timeout is 2 minutes; maximum is 10 minutes
+    - Output is truncated at 30000 characters
+    - For shell commands, prefer run_shell_command instead
+    - This tool requires permission approval for each execution
+
+input_schema:
+  type: object
+  properties:
+    code_block:
+      type: string
+      description: The Python code to execute
+    timeout:
+      type: integer
+      description: >-
+        (OPTIONAL) Timeout in milliseconds. Default 120000 (2 min), max 600000
+        (10 min).
+    description:
+      type: string
+      description: >-
+        (OPTIONAL) Clear, concise description of what this code does.
+  required:
+    - code_block
+  additionalProperties: false
+  $schema: http://json-schema.org/draft-07/schema#

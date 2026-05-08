@@ -25,10 +25,14 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from mcp import ClientSession, StdioServerParameters
 from mcp.types import Tool as MCPToolType
 
+from nexau.archs.permissions.helpers import check_mcp_permission
+
 from ..tool import Tool
 
 if TYPE_CHECKING:
     import httpx
+
+    from nexau.archs.main_sub.framework_context import FrameworkContext
 
 logger = logging.getLogger(__name__)
 JSONDict = dict[str, Any]
@@ -630,6 +634,10 @@ class MCPServerConfig:
     timeout: float | None = 30
     # disable parallel
     disable_parallel: bool = False
+    # RFC-0019: server 级默认权限（None = auto-allow，向后兼容）
+    permissions: dict[str, list[str]] | None = None
+    # RFC-0019: per-tool 权限覆盖（key=原始工具名，None 值 = auto-allow）
+    tool_permissions: dict[str, dict[str, list[str]] | None] | None = None
 
 
 class MCPTool(Tool):
@@ -659,14 +667,28 @@ class MCPTool(Tool):
             # For stdio sessions, store the server config for recreation
             self._session_params = server_config
 
+        # CC 对齐: MCP 工具命名 mcp__{server}__{tool}
+        self._server_name = server_config.name if server_config else "unknown"
+        self._raw_tool_name = mcp_tool.name
+        prefixed_name = f"mcp__{self._server_name}__{mcp_tool.name}"
+
         # Convert MCP tool to NexAU tool format
         super().__init__(
-            name=mcp_tool.name,
+            name=prefixed_name,
             description=mcp_tool.description or "",
             input_schema=mcp_tool.inputSchema,
             implementation=self._sync_executor,
             disable_parallel=server_config.disable_parallel if server_config else False,
         )
+
+        # RFC-0019: 权限优先级 tool_permissions > server permissions > None (auto-allow)
+        resolved_perms: dict[str, list[str]] | None = None
+        if server_config is not None:
+            if server_config.tool_permissions is not None and self._raw_tool_name in server_config.tool_permissions:
+                resolved_perms = server_config.tool_permissions[self._raw_tool_name]
+            elif server_config.permissions is not None:
+                resolved_perms = server_config.permissions
+        self.permissions = resolved_perms
 
         # MCPTool 拥有原生 async execute_async() 实现（直接 await MCP RPC），
         # executor 应走 async 路径而非 to_thread → _execute_sync → asyncio.run。
@@ -928,9 +950,12 @@ class MCPTool(Tool):
 
     def execute(self, **kwargs: Any) -> dict[str, Any]:
         """Execute the MCP tool synchronously (for backward compatibility)."""
-        # Filter out agent_state and global_storage parameters as they're not needed for MCP tools
-        # and cause JSON serialization errors
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage")}
+        # RFC-0019: MCP 权限检查（AskPermission/PermissionDenied 自然传播至 Executor）
+        ctx: FrameworkContext | None = kwargs.get("ctx")
+        if ctx is not None:
+            check_mcp_permission(ctx, self._server_name, self._raw_tool_name)
+
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage", "sandbox", "ctx")}
 
         def _sort_key(item: tuple[str, Any]) -> str:
             return item[0]
@@ -950,7 +975,11 @@ class MCPTool(Tool):
         跨 loop session 绑定问题。同步路径 execute() / _execute_sync()
         保留给向后兼容的 sync 调用方。
         """
-        # Filter same params as execute() and _execute_async()
+        # RFC-0019: MCP 权限检查
+        ctx: FrameworkContext | None = kwargs.get("ctx")
+        if ctx is not None:
+            check_mcp_permission(ctx, self._server_name, self._raw_tool_name)
+
         filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ("agent_state", "global_storage", "sandbox", "ctx")}
 
         def _sort_key(item: tuple[str, Any]) -> str:
@@ -968,7 +997,7 @@ class MCPTool(Tool):
         try:
             # Create a thread-local session to avoid event loop conflicts
             session = await self._get_thread_local_session()
-            result = await session.call_tool(self.name, kwargs)
+            result = await session.call_tool(self._raw_tool_name, kwargs)
 
             if hasattr(result, "content"):
                 result_content = getattr(result, "content")
@@ -1427,6 +1456,8 @@ class MCPManager:
         headers: dict[str, str] | None = None,
         timeout: float | None = None,
         disable_parallel: bool = False,
+        permissions: dict[str, list[str]] | None = None,
+        tool_permissions: dict[str, dict[str, list[str]] | None] | None = None,
     ) -> None:
         """Add an MCP server configuration."""
         config = MCPServerConfig(
@@ -1439,6 +1470,8 @@ class MCPManager:
             headers=headers,
             timeout=timeout,
             disable_parallel=disable_parallel,
+            permissions=permissions,
+            tool_permissions=tool_permissions,
         )
         self.client.add_server(config)
 
@@ -1551,6 +1584,8 @@ async def initialize_mcp_tools(server_configs: list[dict[str, Any]]) -> Sequence
             headers=config.get("headers"),
             timeout=config.get("timeout"),
             disable_parallel=config.get("disable_parallel", False),
+            permissions=config.get("permissions"),
+            tool_permissions=config.get("tool_permissions"),
         )
 
     # Initialize servers and discover tools

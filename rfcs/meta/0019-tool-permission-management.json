@@ -1,0 +1,64 @@
+{
+  "rfc": "0019",
+  "title": "工具权限管理（Tool Permission Management）",
+  "status": "implemented",
+  "priority": "P1",
+  "tags": [
+    "architecture",
+    "permissions",
+    "security",
+    "tool",
+    "session"
+  ],
+  "affects": "nexau core (permissions, executor, session storage, framework_context, tool config)",
+  "created": "2026-04-22",
+  "updated": "2026-05-07",
+  "requires": [],
+  "related": [
+    "0018"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "FrameworkContext + 权限类型 + 匹配 helper（check_permission, check_path, check_shell, check_url, check_mcp）",
+      "depends_on": [],
+      "status": "implemented",
+      "ref": "nexau/archs/permissions/{types.py, helpers.py}, nexau/archs/main_sub/framework_context.py"
+    },
+    {
+      "id": "T2",
+      "title": "DB schema: permission_rules 表 + sessions.pending_tool_calls 字段",
+      "depends_on": [],
+      "status": "implemented",
+      "ref": "nexau/archs/session/models/permission_rule.py, nexau/archs/session/migrations/001_tool_permission.sql"
+    },
+    {
+      "id": "T3",
+      "title": "Executor 集成 + 并行异常安全 + Ask 持久化",
+      "depends_on": ["T1", "T2"],
+      "status": "implemented",
+      "ref": "nexau/archs/main_sub/execution/executor.py"
+    },
+    {
+      "id": "T4",
+      "title": "agent.run 硬拦 + Resume 语义",
+      "depends_on": ["T3"],
+      "status": "implemented",
+      "ref": "nexau/archs/main_sub/agent.py"
+    },
+    {
+      "id": "T5",
+      "title": "内置 tool 适配（file_tools, shell_tools, web_tools, multiedit_tool, run_code_tool, MCP）",
+      "depends_on": ["T1"],
+      "status": "implemented",
+      "ref": "nexau/archs/tool/builtin/, examples/cc_agent/cc_agent.yaml"
+    },
+    {
+      "id": "T6",
+      "title": "E2E 测试（60 项手工测试，60/60 PASS）",
+      "depends_on": ["T4", "T5"],
+      "status": "implemented",
+      "ref": "docs/testing/permission-e2e-test-plan.md, docs/testing/permission-e2e-manual-test-log.md"
+    }
+  ]
+}

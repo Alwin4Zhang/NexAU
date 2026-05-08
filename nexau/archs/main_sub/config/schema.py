@@ -53,6 +53,10 @@ class MCPServerBaseModel(BaseModel):
     timeout: int | None = Field(default=None, gt=0)
     env: dict[str, str] | None = None
     disable_parallel: bool = False
+    # RFC-0019: server 级默认权限（None = auto-allow，向后兼容）
+    permissions: dict[str, list[str]] | None = None
+    # RFC-0019: per-tool 权限覆盖（key=原始工具名，None 值 = auto-allow）
+    tool_permissions: dict[str, dict[str, list[str]] | None] | None = None
 
 
 class MCPStdIOServer(MCPServerBaseModel):

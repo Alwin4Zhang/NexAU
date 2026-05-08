@@ -24,7 +24,7 @@ from nexau.archs.main_sub.agent_context import GlobalStorage
 from .agent_lock_service import AgentLockService
 from .agent_run_action_service import AgentRunActionService
 from .agent_service import AgentService
-from .models import AgentModel, AgentRunActionModel, SessionModel
+from .models import AgentModel, AgentRunActionModel, PermissionRuleModel, SessionModel
 from .models.agent_lock import AgentLockModel
 from .orm import AndFilter, ComparisonFilter, DatabaseEngine, LoopSafeDatabaseEngine
 from .task_lock_service import TaskLockService
@@ -252,6 +252,7 @@ class SessionManager:
                 AgentModel,
                 AgentRunActionModel,
                 AgentLockModel,
+                PermissionRuleModel,
             ]
         )
         self._models_initialized = True
@@ -338,5 +339,133 @@ class SessionManager:
         session = await self._get_or_create_session(user_id=user_id, session_id=session_id)
         session.context = context
         session.storage = storage
+        session.updated_at = datetime.now()
+        return await self._update_session(session)
+
+    # -----------------------------------------------------------------------
+    # RFC-0019: Permission management API
+    # -----------------------------------------------------------------------
+
+    async def load_permission_rules(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        tool_name: str,
+    ) -> tuple[list[str], list[str]]:
+        """Load allow/deny rules for a tool in a session.
+
+        RFC-0019: FrameworkContext 构造时读取规则
+
+        Returns:
+            (allow_rules, deny_rules) tuple of rule content lists
+        """
+        filters = AndFilter(
+            filters=[
+                ComparisonFilter.eq("user_id", user_id),
+                ComparisonFilter.eq("session_id", session_id),
+                ComparisonFilter.eq("tool_name", tool_name),
+            ]
+        )
+        rules = await self._engine.find_many(PermissionRuleModel, filters=filters)
+        allow_rules = [r.rule_content for r in rules if r.behavior == "allow"]
+        deny_rules = [r.rule_content for r in rules if r.behavior == "deny"]
+        return allow_rules, deny_rules
+
+    async def save_permission_rule(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        tool_name: str,
+        rule_content: str,
+        behavior: str,
+        source: str = "user",
+    ) -> PermissionRuleModel:
+        """Save a permission rule.
+
+        RFC-0019: 用户 allow 决策追加规则
+
+        Uses upsert to avoid duplicate key errors.
+        """
+        rule = PermissionRuleModel(
+            user_id=user_id,
+            session_id=session_id,
+            tool_name=tool_name,
+            rule_content=rule_content,
+            behavior=behavior,
+            source=source,
+        )
+        model, _created = await self._engine.upsert(rule)
+        return model
+
+    async def init_permission_rules_from_config(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        tools: list[Any],
+    ) -> None:
+        """Initialize permission rules from tool YAML config.
+
+        RFC-0019: Session 创建时初始化规则
+
+        遍历 agent 的 tool 列表，将 YAML 中 permissions 字段的
+        allow/deny 规则写入 source=config 的规则行。
+        没有 permissions 的 tool 不写入规则。
+        """
+        for tool in tools:
+            permissions = getattr(tool, "permissions", None)
+            if permissions is None:
+                continue
+            for rule_content in permissions.get("allow", []):
+                await self.save_permission_rule(
+                    user_id=user_id,
+                    session_id=session_id,
+                    tool_name=tool.name,
+                    rule_content=rule_content,
+                    behavior="allow",
+                    source="config",
+                )
+            for rule_content in permissions.get("deny", []):
+                await self.save_permission_rule(
+                    user_id=user_id,
+                    session_id=session_id,
+                    tool_name=tool.name,
+                    rule_content=rule_content,
+                    behavior="deny",
+                    source="config",
+                )
+
+    async def get_pending_tool_calls(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """Read pending_tool_calls from session.
+
+        RFC-0019: 读取 Ask 状态
+        """
+        session = await self.get_session(user_id=user_id, session_id=session_id)
+        if session is None:
+            return None
+        return session.pending_tool_calls
+
+    async def update_pending_tool_calls(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        pending_tool_calls: dict[str, Any] | None,
+    ) -> SessionModel:
+        """Update pending_tool_calls on session.
+
+        RFC-0019: 写入/清除 Ask 状态
+
+        Set to None to clear (resume 完毕后)。
+        """
+        session = await self._get_or_create_session(user_id=user_id, session_id=session_id)
+        session.pending_tool_calls = pending_tool_calls
         session.updated_at = datetime.now()
         return await self._update_session(session)

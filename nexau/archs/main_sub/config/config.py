@@ -1054,6 +1054,15 @@ class AgentConfigBuilder:
                 f"Tool '{name}' extra_kwargs contains reserved keys that cannot be overridden: {sorted(conflict_keys)}",
             )
 
+        # RFC-0019: 解析权限配置
+        permissions_raw: object | None = tool_config.get("permissions")
+        permissions: dict[str, list[str]] | None = None
+        if permissions_raw is not None:
+            if isinstance(permissions_raw, dict):
+                permissions = cast(dict[str, list[str]], permissions_raw)
+            else:
+                raise ConfigError(f"Tool '{name}' field 'permissions' must be a dict")
+
         # Resolve YAML path
         yaml_path = str(_resolve_config_path(yaml_path, base_path))
 
@@ -1066,4 +1075,5 @@ class AgentConfigBuilder:
             lazy=lazy,
             name=name,
             defer_loading=defer_loading,
+            permissions=permissions,
         )

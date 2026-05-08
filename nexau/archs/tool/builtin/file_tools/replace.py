@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
+from nexau.archs.main_sub.framework_context import FrameworkContext
+from nexau.archs.permissions.helpers import check_path_permission
 from nexau.archs.sandbox import SandboxStatus
 from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 
@@ -307,6 +309,8 @@ def replace(
     modified_by_user: bool = False,
     ai_proposed_content: str | None = None,
     agent_state: AgentState | None = None,
+    *,
+    ctx: FrameworkContext | None = None,
 ) -> dict[str, Any]:
     """
     Replaces text within a file.
@@ -332,6 +336,10 @@ def replace(
     Returns:
         Dict with content and returnDisplay matching gemini-cli format
     """
+    # RFC-0019: 权限检查（在任何资源分配之前）
+    if ctx is not None:
+        check_path_permission(ctx, file_path)
+
     try:
         sandbox = get_sandbox(agent_state)
 

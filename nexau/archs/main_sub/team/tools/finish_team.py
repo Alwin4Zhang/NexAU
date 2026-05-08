@@ -55,22 +55,17 @@ async def finish_team(
     completed = [t for t in all_tasks if t.status == "completed"]
     incomplete = [t for t in all_tasks if t.status != "completed"]
 
-    # 2. 检查是否有运行中的 teammate
+    # 2. 强制停止仍在运行的 teammate（leader 决定收工即可终止 worker）
     teammates = ts.team.get_teammate_info()
     running_teammates = [t for t in teammates if t.status == "running"]
+    if running_teammates:
+        await ts.team.stop_all_teammates()
 
-    # 3. 阻止结束：存在未完成任务或运行中的 teammate
-    reasons: list[str] = []
+    # 3. 阻止结束：存在未完成任务
     if incomplete:
         task_details = ", ".join(f"{t.title}({t.status})" for t in incomplete)
-        reasons.append(f"{len(incomplete)} incomplete task(s): {task_details}")
-    if running_teammates:
-        agent_details = ", ".join(f"{t.agent_id}({t.role_name})" for t in running_teammates)
-        reasons.append(f"{len(running_teammates)} running teammate(s): {agent_details}")
-
-    if reasons:
         return ToolError(
-            error="Cannot finish team: " + "; ".join(reasons),
+            error=f"Cannot finish team: {len(incomplete)} incomplete task(s): {task_details}",
             code="invalid_state",
         )
 

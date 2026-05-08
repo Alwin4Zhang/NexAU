@@ -676,7 +676,7 @@ class AgentTeam:
             if self._watchdog is not None:
                 self._watchdog.unregister(agent_id)
 
-    async def _stop_all_teammates(self) -> None:
+    async def stop_all_teammates(self) -> None:
         """Force-stop all running teammates.
 
         RFC-0002: 强制停止所有运行中的 Teammate
@@ -817,7 +817,7 @@ class AgentTeam:
             self._leader_agent.executor.force_stop()
 
         # 2. 停止所有 teammates
-        await self._stop_all_teammates()
+        await self.stop_all_teammates()
 
         # 3. 强制释放 leader lock（防止 run_async 尚未退出导致锁残留）
         leader_session_id = f"{self._team_session_id}:leader"
@@ -987,6 +987,10 @@ class AgentTeam:
             )
             self._leader_agent = leader
 
+            # RFC-0002: 让 leader 的 executor 能查询活跃 teammate 数量，
+            # 有活跃 teammate 时跳过 nudge，直接进入 _wait_for_messages。
+            leader.executor.has_active_teammates = lambda: len(self._teammate_agents) > 0
+
             # 5. 恢复之前 spawn 的 teammate（从 DB 读取，重建 Agent 并启动）
             await self._restore_teammates()
 
@@ -1013,7 +1017,7 @@ class AgentTeam:
                     pass
 
             # 9. Leader 结束后，强制停止所有 teammate
-            await self._stop_all_teammates()
+            await self.stop_all_teammates()
 
             # 9a. 管理共享 sandbox 生命周期
             if self._shared_sandbox_manager is not None:
