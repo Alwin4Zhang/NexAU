@@ -39,15 +39,17 @@ Formatters affect:
 
 Formatters do **not** replace the raw output channel. Middleware and other runtime components can still inspect the original structured result via `hook_input.tool_output`.
 
-## Default Behavior: XML Formatter
+## Default Behavior: Markdown Formatter
 
-If a tool does not configure a formatter, NexAU uses the built-in `xml` formatter.
+If a tool does not configure a formatter, NexAU uses the built-in `markdown` formatter.
+The XML formatter is still available as an explicit opt-in (`formatter: xml`) for
+tools that intentionally need XML-shaped output.
 
 Its behavior is intentionally simple:
 
 - **string output** → passed through directly
-- **image / multimodal output** → passed through without XML wrapping
-- **dict / list / scalar output** → rendered into stable XML text
+- **image / multimodal output** → passed through without Markdown wrapping
+- **dict / list / scalar output** → rendered into stable Markdown text
 - display-only fields like `returnDisplay` → stripped from the model-facing output
 
 ### Single-field unwrap fast path
@@ -59,7 +61,7 @@ After display-only fields are stripped, these values are unwrapped directly:
 {"result": "hello"}
 ```
 
-Instead of wrapping them in XML, NexAU sends the bare value to the model. This avoids noisy wrappers around the common case where the tool really has only one body field.
+Instead of wrapping them in Markdown, NexAU sends the bare value to the model. This avoids noisy wrappers around the common case where the tool really has only one body field.
 
 ### Example
 
@@ -75,15 +77,16 @@ Raw tool output:
 
 Model-facing output after the default formatter:
 
-```xml
-<tool_result>
-  <meta>
-    <status>success</status>
-  </meta>
-  <body field="result"><![CDATA[
+```markdown
+## Tool Result
+
+### Metadata
+
+- `status`: success
+
+### Body (`result`)
+
 Found 3 matches
-]]></body>
-</tool_result>
 ```
 
 If the raw output were only:
@@ -170,7 +173,7 @@ When designing a formatter, think about whether the output shape is friendly to 
 
 ## Built-in Example: `run_shell_command`
 
-`run_shell_command` uses a custom formatter instead of the default XML formatter.
+`run_shell_command` uses a custom formatter instead of the default Markdown formatter.
 
 Why?
 
@@ -200,10 +203,16 @@ You can configure a formatter in tool YAML with the `formatter` field.
 type: tool
 name: my_tool
 description: Example tool
-formatter: xml
+formatter: markdown
 input_schema:
   type: object
   properties: {}
+```
+
+The legacy XML formatter remains available when a tool explicitly needs it:
+
+```yaml
+formatter: xml
 ```
 
 ### Option 2: import path
@@ -265,14 +274,14 @@ Prefer formatters when you need to:
 
 - flatten noisy structured results for the model
 - preserve runtime metadata without dumping all of it into the prompt
-- produce a tool-specific text format that is clearer than generic XML
+- produce a tool-specific text format that is clearer than generic Markdown
 - keep truncation and downstream middleware operating on a cleaner payload
 
-Avoid custom formatters when the default XML rendering is already good enough.
+Avoid custom formatters when the default Markdown rendering is already good enough.
 
 As a rule of thumb:
 
-- **use default `xml`** for ordinary structured tools
+- **use default `markdown`** for ordinary structured tools
 - **use a custom formatter** for tools with highly specialized runtime output shapes
 
 ## Failure Behavior
@@ -280,7 +289,7 @@ As a rule of thumb:
 Formatter failures are defensive:
 
 1. NexAU first tries the configured formatter.
-2. If it fails, NexAU falls back to the built-in `xml` formatter.
+2. If it fails, NexAU falls back to the built-in `markdown` formatter.
 3. If that also fails, NexAU falls back to the raw tool output.
 
 This keeps tool execution robust even when a custom formatter is buggy.

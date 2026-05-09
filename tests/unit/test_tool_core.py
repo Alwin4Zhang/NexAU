@@ -207,9 +207,9 @@ def test_get_info_and_string_helpers():
     assert "implementation=impl" in repr(tool)
 
 
-def test_tool_defaults_to_xml_formatter() -> None:
+def test_tool_defaults_to_markdown_formatter() -> None:
     tool = Tool(
-        name="xml_default",
+        name="markdown_default",
         description="desc",
         input_schema={"type": "object", "properties": {}},
         implementation=lambda: {"result": "Hello from tool\nSecond line"},
@@ -223,12 +223,13 @@ def test_tool_defaults_to_xml_formatter() -> None:
     )
 
     assert isinstance(formatted, str)
-    assert "<tool_result>" in formatted
-    assert '<body field="result">' in formatted
+    assert "<tool_result>" not in formatted
+    assert "## Tool Result" in formatted
+    assert "### Body (`result`)" in formatted
     assert "Hello from tool" in formatted
 
 
-def test_tool_xml_formatter_unwraps_single_content_field() -> None:
+def test_tool_default_formatter_unwraps_single_content_field() -> None:
     tool = Tool(
         name="content_only",
         description="desc",
@@ -246,7 +247,7 @@ def test_tool_xml_formatter_unwraps_single_content_field() -> None:
     assert formatted == "Plain content for llm"
 
 
-def test_tool_xml_formatter_unwraps_single_result_field() -> None:
+def test_tool_default_formatter_unwraps_single_result_field() -> None:
     tool = Tool(
         name="result_only",
         description="desc",

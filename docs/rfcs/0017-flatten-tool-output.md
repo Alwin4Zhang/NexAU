@@ -5,11 +5,11 @@
 - **标签**: `architecture`, `dx`, `llm`
 - **影响服务**: nexau core (tool yaml, tool executor, middleware, messages)
 - **创建日期**: 2026-04-10
-- **更新日期**: 2026-04-10
+- **更新日期**: 2026-05-09
 
 ## 摘要
 
-当工具返回 Dict 结构结果时（尤其是 Sub-agent、MCP、复杂 builtin tool），当前 NexAU 最终常常通过 `coerce_tool_result_content()` 退化为 `str(dict)`，导致 LLM 看到的是 Python repr 包裹的嵌套结构，而不是可直接阅读的主体内容。本 RFC 提议：**在 tool YAML 中支持配置 custom formatter；若未配置，则统一使用 NexAU 内置的 XML formatter**。同时，formatter 必须在 `after_tool` middleware 之前执行，`LongToolOutputMiddleware` 不再只处理 raw tool output，而是优先处理 formatter 产出的 LLM-facing output，从而保证“被截断的内容”和“最终发给 LLM 的内容”是同一个对象。
+当工具返回 Dict 结构结果时（尤其是 Sub-agent、MCP、复杂 builtin tool），当前 NexAU 最终常常通过 `coerce_tool_result_content()` 退化为 `str(dict)`，导致 LLM 看到的是 Python repr 包裹的嵌套结构，而不是可直接阅读的主体内容。本 RFC 提议：**在 tool YAML 中支持配置 custom formatter；若未配置，则统一使用 NexAU 内置的 formatter**。初版默认 formatter 为 XML；2026-05-09 增量调整为 **Markdown 默认 formatter**，XML 保留为显式 opt-in，以降低 XML-like 标记误干扰模型 chat template / tool-call 模板的风险。同时，formatter 必须在 `after_tool` middleware 之前执行，`LongToolOutputMiddleware` 不再只处理 raw tool output，而是优先处理 formatter 产出的 LLM-facing output，从而保证“被截断的内容”和“最终发给 LLM 的内容”是同一个对象。
 
 ## 动机
 
@@ -82,7 +82,7 @@ raw tool output
     ↓
 formatter resolution
     ├─ YAML 指定 custom formatter
-    └─ 未指定 → 默认 XML formatter
+    └─ 未指定 → 默认 Markdown formatter
     ↓
 llm_tool_output
     ↓
@@ -99,7 +99,7 @@ ToolResultBlock.content
 
 1. **`tool_output` 保留原始结构**，供事件、调试、frontend、程序逻辑使用
 2. **`llm_tool_output` 是唯一 LLM 输入源**，由 formatter 生成，并由 middleware 截断
-3. **默认总有 formatter**，即使 YAML 未配置，也使用内置 XML formatter
+3. **默认总有 formatter**，即使 YAML 未配置，也使用内置 Markdown formatter
 4. **LongToolOutputMiddleware 针对 `llm_tool_output` 工作**，而不是只看 raw dict
 
 ### 详细设计
@@ -122,14 +122,20 @@ class ToolYamlSchema(BaseModel):
 语义：
 
 - 若配置，则表示 custom formatter
-- 若未配置，则框架自动回退到内置 `xml` formatter
+- 若未配置，则框架自动回退到内置 `markdown` formatter
 
 本 RFC 约束：
 
-- builtin formatter alias **首期只支持 `xml`**
-- 未来如需 `markdown` / `plain`，另起后续增量设计，不在本 RFC 首批范围内
+- builtin formatter alias 支持 `markdown` 与 `xml`
+- `markdown` 是默认 alias；`xml` 仅用于显式 opt-in 的兼容/特殊场景
 
 建议支持两种写法：
+
+```yaml
+formatter: markdown
+```
+
+兼容旧行为时可显式指定：
 
 ```yaml
 formatter: xml
@@ -149,14 +155,14 @@ Tool(
     description="...",
     input_schema={...},
     implementation=my_impl,
-    formatter="xml",  # optional
+    formatter="markdown",  # optional; omitted also means markdown
 )
 ```
 
 规则：
 
-- 未显式传入时，同样默认回退到内置 `xml` formatter
-- 允许传 builtin alias（当前仅 `xml`）
+- 未显式传入时，同样默认回退到内置 `markdown` formatter
+- 允许传 builtin alias（当前支持 `markdown` / `xml`）
 - 允许传 import path 或直接传 callable（如框架已有此能力）
 
 这样可以保证 YAML Tool 与 Python Tool 的行为一致，不引入两套规则。
@@ -184,37 +190,38 @@ ToolFormatter = Callable[[ToolFormatterContext], object]
 - `dict` / `list`：允许 formatter 返回结构，供后续 `coerce_tool_result_content()` 继续处理
 - image-compatible 结构：保留现有 multimodal 管道
 
-#### 3. 默认 XML formatter
+#### 3. 默认 Markdown formatter
 
-当 tool YAML 未配置 formatter 时，统一使用 NexAU 内置 XML formatter。
+当 tool YAML 未配置 formatter 时，统一使用 NexAU 内置 Markdown formatter。XML formatter 保留为显式 `formatter: xml`。
 
-默认 XML formatter 的目标不是保留原始 JSON，而是生成**稳定、扁平、可截断**的文本边界。例如：
+默认 Markdown formatter 的目标不是保留原始 JSON，而是生成**稳定、扁平、可截断**且不依赖 XML-like 标签的文本边界。例如：
 
-```xml
-<tool_result>
-  <meta>
-    <status>success</status>
-    <sub_agent_name>explore</sub_agent_name>
-    <sub_agent_id>d6a23025ed0c</sub_agent_id>
-  </meta>
-  <body field="result"><![CDATA[
+```markdown
+## Tool Result
+
+### Metadata
+
+- `status`: success
+- `sub_agent_name`: explore
+- `sub_agent_id`: d6a23025ed0c
+
+### Body (`result`)
+
 ## Answer
 
 ...长文本正文...
-  ]]></body>
-</tool_result>
 ```
 
-默认 XML formatter 规则：
+默认 Markdown formatter 规则：
 
 1. **字符串输出**：可直接返回原字符串，避免无意义包裹
-2. **图片输出 bypass XML formatter**：对 MCP tool 与 Python tool，只要 formatter 输入中检测到 image-like / multimodal image 结果，就直接 bypass XML formatter，原样交给后续 `coerce_tool_result_content()` 处理
-3. **Dict / List 输出**：渲染为 XML 文本
+2. **图片输出 bypass Markdown formatter**：对 MCP tool 与 Python tool，只要 formatter 输入中检测到 image-like / multimodal image 结果，就直接 bypass Markdown formatter，原样交给后续 `coerce_tool_result_content()` 处理
+3. **Dict / List 输出**：渲染为 Markdown 文本
 4. **忽略 display-only 字段**：如 `returnDisplay`
 5. **单字段正文直通**：若在剥离 `returnDisplay` 等 display-only 字段后，Dict 只剩 `content` 或 `result` 一个键，则直接返回该值，不再包一层 XML
 6. **识别主体字段**：优先 `result`、`content`、`stdout`、`stderr`、`message`，再回退到最长 multiline string
-7. **短字段进入 `<meta>`**
-8. **长正文进入 `<body>`**
+7. **短字段进入 Metadata 列表**
+8. **长正文进入 Body section**
 
 #### 4. Custom formatter 的 YAML 配置方式
 
@@ -346,7 +353,7 @@ tool_result_block = ToolResultBlock(
 其中 `tool.format_output_for_llm(...)` 负责：
 
 1. 解析 YAML 中的 `formatter`
-2. 若缺失则回退到内置 XML formatter
+2. 若缺失则回退到内置 Markdown formatter
 3. 构造 `ToolFormatterContext`
 4. 调用 formatter 返回 `llm_tool_output`
 
@@ -410,7 +417,7 @@ fallback_text=str(content)
 
 ## 示例
 
-### 示例 1：默认 XML formatter + LongToolOutputMiddleware
+### 示例 1：默认 Markdown formatter + LongToolOutputMiddleware
 
 原始输出：
 
@@ -426,22 +433,23 @@ fallback_text=str(content)
 
 formatter 生成：
 
-```xml
-<tool_result>
-  <meta>
-    <status>success</status>
-    <sub_agent_name>explore</sub_agent_name>
-    <sub_agent_id>d6a23025ed0c</sub_agent_id>
-  </meta>
-  <body field="result"><![CDATA[
+```markdown
+## Tool Result
+
+### Metadata
+
+- `status`: success
+- `sub_agent_name`: explore
+- `sub_agent_id`: d6a23025ed0c
+
+### Body (`result`)
+
 ## Answer
 
 NexAU handles tool results through...
-  ]]></body>
-</tool_result>
 ```
 
-若超长，`LongToolOutputMiddleware` 截断的是上面的 XML 文本，而不是原始 dict。
+若超长，`LongToolOutputMiddleware` 截断的是上面的 Markdown 文本，而不是原始 dict。
 
 ### 示例 2：Agent tool 使用 custom formatter
 
@@ -464,7 +472,7 @@ NexAU handles tool results through...
 
 若超长，middleware 截断的是这段文本本身。
 
-### 示例 3：简单 Dict 走默认 XML formatter
+### 示例 3：简单 Dict 走默认 Markdown formatter
 
 原始输出：
 
@@ -474,14 +482,14 @@ NexAU handles tool results through...
 
 格式化后：
 
-```xml
-<tool_result>
-  <meta>
-    <status>ok</status>
-    <message>File created</message>
-    <path>/tmp/test.py</path>
-  </meta>
-</tool_result>
+```markdown
+## Tool Result
+
+### Metadata
+
+- `status`: ok
+- `message`: File created
+- `path`: /tmp/test.py
 ```
 
 ## 权衡取舍
@@ -493,13 +501,13 @@ NexAU handles tool results through...
 | A: 仅把 `str(dict)` 改成 `json.dumps` | 改动小 | 仍然是结构包裹，长正文仍埋在字段里 | 否 |
 | B: formatter 放在 middleware 之后 | 侵入较小 | middleware 截断的不是最终 LLM 输入对象 | 否 |
 | C: 所有工具强制固定 formatter，不允许配置 | 简单 | 无法针对 Agent / MCP / Bash 等工具做定制优化 | 否 |
-| **D: tool YAML 配置 custom formatter，默认 XML formatter，且 formatter 先于 middleware 执行** | 统一入口、截断对象正确、可扩展 | 需要扩展 hook 双通道 | **采用** |
+| **D: tool YAML 配置 custom formatter，默认 Markdown formatter，且 formatter 先于 middleware 执行** | 统一入口、截断对象正确、可扩展；避免默认输出引入 XML-like 标签 | 需要扩展 hook 双通道 | **采用** |
 
 ### 缺点
 
-1. **XML 会引入少量额外 token**，但比 `str(dict)` 噪声更可控
+1. **Markdown 会引入少量额外 token**，但比 `str(dict)` 噪声更可控，且比默认 XML 更少干扰 chat template
 2. **hook 双通道增加了执行链路复杂度**
-3. **默认 XML formatter 仍有启发式**，例如主体字段识别不可能覆盖所有极端情况
+3. **默认 Markdown formatter 仍有启发式**，例如主体字段识别不可能覆盖所有极端情况
 
 ## 实现计划
 
@@ -507,9 +515,9 @@ NexAU handles tool results through...
 
 - [x] 在 `ToolYamlSchema` 增加 `formatter` 字段
 - [x] 在 `Tool` / `Tool.from_yaml()` 中解析 formatter 配置，并让纯 Python `Tool(...)` 也支持 formatter 参数
-- [x] 建立 formatter resolver，支持 builtin alias 与 import path（首期 builtin alias 仅 `xml`）
-- [x] 实现内置默认 XML formatter
-- [x] 为 image-like / multimodal image 输出建立 XML formatter bypass 规则（覆盖 MCP tool 与 Python tool）
+- [x] 建立 formatter resolver，支持 builtin alias 与 import path（当前支持 `markdown` / `xml`）
+- [x] 实现内置默认 Markdown formatter，并保留 XML formatter 作为显式 opt-in
+- [x] 为 image-like / multimodal image 输出建立 formatter bypass 规则（覆盖 MCP tool 与 Python tool）
 
 ### Phase 2: after-tool 双通道接入
 
@@ -543,38 +551,38 @@ NexAU handles tool results through...
 ### 单元测试
 
 - `ToolYamlSchema` 能正确解析 `formatter` 字段
-- 纯 Python `Tool(...)` 未配置 formatter 时也能默认回退到 `xml`
-- formatter resolver 能正确处理：未配置 → `xml`、builtin alias（仅 `xml`）、import path
-- 默认 XML formatter 对简单 Dict、长 `result` Dict、嵌套对象、纯字符串行为正确
-- 默认 XML formatter 对剥离 display-only 字段后仅剩 `content` / `result` 的 Dict，直接返回正文值
-- MCP tool / Python tool 的 image-like output 能正确 bypass XML formatter
+- 纯 Python `Tool(...)` 未配置 formatter 时也能默认回退到 `markdown`
+- formatter resolver 能正确处理：未配置 → `markdown`、builtin alias（`markdown` / `xml`）、import path
+- 默认 Markdown formatter 对简单 Dict、长 `result` Dict、嵌套对象、纯字符串行为正确
+- 默认 Markdown formatter 对剥离 display-only 字段后仅剩 `content` / `result` 的 Dict，直接返回正文值
+- MCP tool / Python tool 的 image-like output 能正确 bypass 默认 formatter
 - `LongToolOutputMiddleware` 在存在 `llm_tool_output` 时优先截断它，而不是 `tool_output`
 
 ### 集成测试
 
 - Sub-agent tool：返回长 `result` 时，LLM 接收的是 formatter 文本而不是 Dict repr
 - `LongToolOutputMiddleware` + formatter：formatter 先生成 LLM 文本，middleware 对该文本截断，最终 LLM 看到截断后的 formatter 文本
-- 自定义 formatter：YAML 中指定 custom formatter 后，LLM 看到自定义格式而不是默认 XML
+- 自定义 formatter：YAML 中指定 custom formatter 后，LLM 看到自定义格式而不是默认 Markdown
 - `run_shell_command`：LLM 接收 Claude Code 风格 shell 结果文本（stdout / stderr / background info），而不是 metadata-heavy dict 或通用 XML
 - AgentEventsMiddleware 继续基于 raw `tool_output` 发事件，不受 `llm_tool_output` 截断影响
 
 ### 手动验证
 
 - 运行一次包含 Sub-agent 的真实对话，确认 tool_result 不再出现 `{'status': ...}` 这种 repr
-- 人工检查长输出被截断后，LLM 看到的仍是 XML / custom formatter 文本，而不是 dict 壳子
+- 人工检查长输出被截断后，LLM 看到的仍是 Markdown / custom formatter 文本，而不是 dict 壳子
 
 ## 已确认的设计决策
 
-1. builtin formatter alias 首期**只支持 `xml`**
-2. 纯 Python 构造的 `Tool(...)` 也支持 `formatter` 参数，且默认同样回退到 XML formatter
-3. 对于 MCP tool 与 Python tool，只要输出是图片 / image-like multimodal 结果，就 **bypass XML formatter**
+1. builtin formatter alias 支持 `markdown` / `xml`，默认 formatter 为 `markdown`
+2. 纯 Python 构造的 `Tool(...)` 也支持 `formatter` 参数，且默认同样回退到 Markdown formatter
+3. 对于 MCP tool 与 Python tool，只要输出是图片 / image-like multimodal 结果，就 **bypass 默认 formatter**
 4. after-tool 阶段采用 **`tool_output` + `llm_tool_output` 双通道**，并按职责拆分 middleware 消费路径
 5. display-only 字段剥离后，如果工具输出只剩单个 `content` 或 `result` 键，则直接把该值作为 LLM-facing output
 6. `run_shell_command` 采用专用 shell formatter，按 Claude Code BashTool 的风格向 LLM暴露 stdout / stderr / background 信息
 
 ## 未解决的问题
 
-1. 如果未来需要 `markdown` / `plain` formatter，builtin alias 命名与语义如何设计？
+1. 如果未来需要 `plain` formatter，builtin alias 命名与语义如何设计？
 2. AgentEventsMiddleware 是否需要在未来事件协议中同时携带 raw output 与 llm output？
 3. `llm_tool_output` 是否需要在调试日志和 tracing 中默认落盘，以便排查 formatter 问题？
 

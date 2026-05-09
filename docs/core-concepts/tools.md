@@ -191,7 +191,7 @@ Besides `returnDisplay`, tools can also control the **model-facing** result via 
 - The formatter converts that raw value into the payload the LLM will actually see.
 - `returnDisplay` remains frontend-only and is stripped before the model sees the result.
 
-If no formatter is configured, NexAU uses the built-in `xml` formatter.
+If no formatter is configured, NexAU uses the built-in `markdown` formatter.
 
 Typical reasons to add a custom formatter:
 
@@ -205,7 +205,7 @@ You can configure a formatter in YAML:
 type: tool
 name: my_tool
 description: Example tool
-formatter: xml
+formatter: markdown
 input_schema:
   type: object
   properties: {}
@@ -216,6 +216,8 @@ Or use an import path for a custom formatter:
 ```yaml
 formatter: my_project.tool_formatters:format_my_tool_output
 ```
+
+You can also opt into the legacy XML formatter explicitly with `formatter: xml`.
 
 See [Tool Output Formatters](../advanced-guides/tool-formatters.md) for the execution order, middleware interaction, and custom formatter examples.
 

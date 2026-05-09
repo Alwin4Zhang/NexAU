@@ -5,7 +5,8 @@ from xml.etree import ElementTree
 import pytest
 
 from nexau.archs.tool import tool as tool_module
-from nexau.archs.tool.formatters import ToolFormatterContext
+from nexau.archs.tool.formatters import ToolFormatterContext, resolve_tool_formatter
+from nexau.archs.tool.formatters.markdown import format_tool_output_as_markdown
 from nexau.archs.tool.formatters.shell import format_run_shell_command_output
 from nexau.archs.tool.formatters.xml import _wrap_cdata, format_tool_output_as_xml
 from nexau.archs.tool.tool import Tool
@@ -19,6 +20,12 @@ def _make_formatter_context(tool_output: object, *, is_error: bool = False) -> T
         tool_call_id="call_123",
         is_error=is_error,
     )
+
+
+def test_resolve_tool_formatter_defaults_to_markdown_and_keeps_xml_alias() -> None:
+    assert resolve_tool_formatter(None) is format_tool_output_as_markdown
+    assert resolve_tool_formatter("markdown") is format_tool_output_as_markdown
+    assert resolve_tool_formatter("xml") is format_tool_output_as_xml
 
 
 def test_wrap_cdata_handles_cdata_terminator() -> None:
@@ -48,7 +55,33 @@ def test_format_tool_output_as_xml_renders_empty_dict() -> None:
     assert formatted == "<tool_result>\n</tool_result>"
 
 
-def test_tool_format_output_for_llm_falls_back_to_xml(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_format_tool_output_as_markdown_renders_dict_without_xml_tags() -> None:
+    formatted = format_tool_output_as_markdown(
+        _make_formatter_context(
+            {
+                "status": "ok",
+                "result": "Found 3 matches\nSecond line",
+                "returnDisplay": "frontend only",
+            }
+        )
+    )
+
+    assert isinstance(formatted, str)
+    assert "<tool_result>" not in formatted
+    assert "## Tool Result" in formatted
+    assert "### Metadata" in formatted
+    assert "- `status`: ok" in formatted
+    assert "### Body (`result`)" in formatted
+    assert "Found 3 matches" in formatted
+    assert "frontend only" not in formatted
+
+
+def test_format_tool_output_as_markdown_unwraps_single_body_fields() -> None:
+    assert format_tool_output_as_markdown(_make_formatter_context({"content": "Plain content"})) == "Plain content"
+    assert format_tool_output_as_markdown(_make_formatter_context({"result": "Plain result"})) == "Plain result"
+
+
+def test_tool_format_output_for_llm_falls_back_to_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
     tool = Tool(
         name="fallback_tool",
         description="desc",
@@ -60,8 +93,8 @@ def test_tool_format_output_for_llm_falls_back_to_xml(monkeypatch: pytest.Monkey
         raise RuntimeError(f"formatter boom: {context.tool_name}")
 
     def fake_resolve(formatter: str | object | None) -> object:
-        assert formatter == "xml"
-        return format_tool_output_as_xml
+        assert formatter == "markdown"
+        return format_tool_output_as_markdown
 
     monkeypatch.setattr(tool, "_resolved_formatter", broken_formatter)
     monkeypatch.setattr(tool_module, "resolve_tool_formatter", fake_resolve)
@@ -74,11 +107,11 @@ def test_tool_format_output_for_llm_falls_back_to_xml(monkeypatch: pytest.Monkey
     )
 
     assert isinstance(formatted, str)
-    assert "<tool_result>" in formatted
+    assert "## Tool Result" in formatted
     assert "fallback body" in formatted
 
 
-def test_tool_format_output_for_llm_falls_back_to_raw_output_when_xml_fails(
+def test_tool_format_output_for_llm_falls_back_to_raw_output_when_markdown_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tool = Tool(
@@ -93,12 +126,12 @@ def test_tool_format_output_for_llm_falls_back_to_raw_output_when_xml_fails(
     def broken_formatter(context: ToolFormatterContext) -> object:
         raise RuntimeError(f"formatter boom: {context.tool_name}")
 
-    def broken_xml_formatter(context: ToolFormatterContext) -> object:
-        raise ValueError(f"xml boom: {context.tool_call_id}")
+    def broken_markdown_formatter(context: ToolFormatterContext) -> object:
+        raise ValueError(f"markdown boom: {context.tool_call_id}")
 
     def fake_resolve(formatter: str | object | None) -> object:
-        assert formatter == "xml"
-        return broken_xml_formatter
+        assert formatter == "markdown"
+        return broken_markdown_formatter
 
     monkeypatch.setattr(tool, "_resolved_formatter", broken_formatter)
     monkeypatch.setattr(tool_module, "resolve_tool_formatter", fake_resolve)

@@ -395,7 +395,7 @@ class Tool:
 
         RFC-0017: formatter resolver
 
-        未显式配置时自动回退到 builtin `xml` formatter。
+        未显式配置时自动回退到 builtin `markdown` formatter。
         """
 
         if self._resolved_formatter is None:
@@ -430,12 +430,12 @@ class Tool:
         try:
             return formatter(formatter_context)
         except Exception:
-            logger.exception("Tool '%s' formatter failed; falling back to builtin XML formatter", self.name)
-            fallback_formatter = resolve_tool_formatter("xml")
+            logger.exception("Tool '%s' formatter failed; falling back to builtin Markdown formatter", self.name)
+            fallback_formatter = resolve_tool_formatter("markdown")
             try:
                 return fallback_formatter(formatter_context)
             except Exception:
-                logger.exception("Tool '%s' builtin XML formatter failed; falling back to raw tool output", self.name)
+                logger.exception("Tool '%s' builtin Markdown formatter failed; falling back to raw tool output", self.name)
                 return tool_output
 
     def _validate_reserved_param_annotations(self) -> None:
@@ -774,7 +774,7 @@ class Tool:
     def __repr__(self) -> str:
         impl = self.implementation
         impl_name = getattr(impl, "__name__", repr(impl)) if impl is not None else "None"
-        formatter_name = self.formatter if isinstance(self.formatter, str) else getattr(self.formatter, "__name__", "xml")
+        formatter_name = self.formatter if isinstance(self.formatter, str) else getattr(self.formatter, "__name__", "markdown")
         return f"Tool(name='{self.name}', implementation={impl_name}, formatter={formatter_name})"
 
     def __str__(self) -> str:

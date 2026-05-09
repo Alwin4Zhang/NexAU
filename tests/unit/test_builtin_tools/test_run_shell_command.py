@@ -114,10 +114,10 @@ class TestRunShellCommandIntegration:
         result = run_shell_command("echo hello", agent_state=agent_state, ctx=ctx)
 
         assert "error" not in result or result.get("error") is None
-        assert "hello world" in result["content"]
+        assert result["content"] == "Output: hello world"
         assert "hello world" in result["returnDisplay"]
-        assert result["stdout"] == "hello world"
-        assert result["stderr"] == ""
+        assert "stdout" not in result
+        assert "stderr" not in result
         assert result["interrupted"] is False
         assert result["timed_out"] is False
 
@@ -154,7 +154,9 @@ class TestRunShellCommandIntegration:
         result = run_shell_command("echo cwd", dir_path="subdir", agent_state=agent_state, ctx=ctx)
 
         expected_cwd = str(Path(str(sandbox.work_dir)) / "subdir")
-        assert result["stdout"] == "cwd ok"
+        assert result["content"] == "Output: cwd ok"
+        assert "stdout" not in result
+        assert "stderr" not in result
         sandbox.file_exists.assert_called_once_with(expected_cwd)
         sandbox.get_file_info.assert_called_once_with(expected_cwd)
         sandbox.execute_shell.assert_called_once_with("echo cwd", timeout=1800000, background=True, cwd=expected_cwd)
@@ -245,7 +247,7 @@ class TestRunShellCommandIntegration:
         assert "Interrupted: command stopped due to stop request." in result["content"]
         assert result["returnDisplay"] == "partial output"
         assert result["exit_code"] == -1
-        assert result["stdout"] == "partial output"
-        assert result["stderr"] == ""
+        assert "stdout" not in result
+        assert "stderr" not in result
         assert result["interrupted"] is True
         assert result["timed_out"] is False

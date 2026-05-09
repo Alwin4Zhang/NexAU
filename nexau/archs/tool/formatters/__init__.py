@@ -39,16 +39,21 @@ ToolFormatter = Callable[[ToolFormatterContext], object]
 def resolve_tool_formatter(formatter: str | ToolFormatter | None) -> ToolFormatter:
     """Resolve a formatter spec to a callable.
 
-    RFC-0017: 支持 builtin alias（首期仅 xml）与 import path
+    RFC-0017: 支持 builtin alias（markdown / xml）与 import path
     """
 
     if formatter is None:
-        from .xml import format_tool_output_as_xml
+        from .markdown import format_tool_output_as_markdown
 
-        return format_tool_output_as_xml
+        return format_tool_output_as_markdown
 
     if callable(formatter):
         return formatter
+
+    if formatter == "markdown":
+        from .markdown import format_tool_output_as_markdown
+
+        return format_tool_output_as_markdown
 
     if formatter == "xml":
         from .xml import format_tool_output_as_xml
