@@ -27,6 +27,7 @@ dependencies = [
   "python-ulid>=3.1.0",
   "nest_asyncio>=1.6.0", # Allow nested event loops for sync/async interop
   "transformers>=4.40,<5",
+  "alembic>=1.18.4",
 ]
 description = "A general-purpose agent framework"
 name = "nexau"
@@ -87,6 +88,12 @@ nexau = [
   "archs/tool/builtin/description/*.yaml",
   "cli/dist/*.js",
   "cli/dist/*.js.map",
+  # RFC-0022: alembic migrations bundled with the wheel so users don't
+  # need a separate CLI install. Templates + version files travel with
+  # the package.
+  "db/migrations/script.py.mako",
+  "db/migrations/env.py",
+  "db/migrations/versions/*.py",
 ]
 
 [tool.ruff]

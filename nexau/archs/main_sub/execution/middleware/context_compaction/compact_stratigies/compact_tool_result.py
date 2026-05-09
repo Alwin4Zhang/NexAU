@@ -15,6 +15,7 @@
 """Tool result compaction strategy."""
 
 import logging
+from typing import ClassVar
 
 from nexau.core.messages import BlockType, Message, Role, ToolResultBlock, ToolUseBlock
 
@@ -37,6 +38,9 @@ class ToolResultCompaction:
     3. Tool results in the last N iterations (in full, controlled by keep_iterations)
     4. Older tool results with compacted content: "Tool call result has been compacted"
     """
+
+    # RFC-0026: stable canonical name persisted into CompactAutoVariant.strategy.
+    name: ClassVar[str] = "tool_result"
 
     def __init__(
         self,

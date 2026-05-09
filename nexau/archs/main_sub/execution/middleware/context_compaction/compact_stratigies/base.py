@@ -14,13 +14,21 @@
 
 """Base protocol for compaction strategies."""
 
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from nexau.core.messages import Message
 
 
 class CompactionStrategy(Protocol):
     """Protocol for compaction strategies that determine how to compact messages."""
+
+    # RFC-0026: stable canonical name persisted into ``CompactAutoVariant.strategy``.
+    # MUST be set by every concrete strategy class. Snake_case, kebab-free; this
+    # value lands in ``nexau_agent_run_actions.extra->>'strategy'`` and downstream
+    # views / dashboards / billing aggregate by it. Refactoring the Python class
+    # name MUST NOT change this — picking a stable identifier here decouples
+    # source-code identifiers from persisted data.
+    name: ClassVar[str]
 
     def compact(
         self,

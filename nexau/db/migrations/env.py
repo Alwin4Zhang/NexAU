@@ -1,0 +1,89 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
+"""Alembic env.py for nexau session DB schema migrations.
+
+This file is invoked by ``alembic`` itself when running ``upgrade`` /
+``downgrade`` / ``stamp``. nexau uses programmatic migration via
+``nexau.db.migrate.upgrade_to_head`` so end users normally never see this
+file. It exists so alembic CLI works for SDK developers iterating on
+migrations:
+
+  uv run alembic -c <(echo) revision --autogenerate -m "..."
+
+The ``sqlalchemy.url`` is set by ``Config`` either from the caller
+(programmatic via ``migrate.py``) or from an env var
+``NEXAU_ALEMBIC_DATABASE_URL`` for CLI use.
+"""
+
+from __future__ import annotations
+
+import os
+
+from alembic import context
+from sqlalchemy import engine_from_config, pool
+from sqlmodel import SQLModel
+
+# Import model classes so their table=True definitions register on
+# SQLModel.metadata before autogenerate inspects it. Holding them in
+# a tuple gives pyright a real reference (no `# type: ignore` needed)
+# and documents which models this env.py is responsible for wiring.
+from nexau.archs.session.models.agent_run_action_model import AgentRunActionModel
+
+REGISTERED_MODELS: tuple[type[SQLModel], ...] = (AgentRunActionModel,)
+
+target_metadata = SQLModel.metadata
+
+config = context.config
+
+# Support stand-alone CLI use via env var (developer iterating on
+# migrations without going through migrate.py).
+if not config.get_main_option("sqlalchemy.url"):
+    url_from_env = os.environ.get("NEXAU_ALEMBIC_DATABASE_URL")
+    if url_from_env:
+        config.set_main_option("sqlalchemy.url", url_from_env)
+
+
+def run_migrations_offline() -> None:
+    """Run migrations without a live DB connection (emit SQL to stdout)."""
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        # Enable batch mode so ALTER COLUMN / DROP COLUMN work on SQLite.
+        # alembic emits the "create new table → copy → rename" pattern.
+        render_as_batch=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    """Run migrations against a live DB connection."""
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            # SQLite-safe ALTER ops via batch mode.
+            render_as_batch=True,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()

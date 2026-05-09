@@ -20,7 +20,7 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, ToolUseBlock
 
@@ -47,6 +47,11 @@ class UserModelFullTraceAdaptiveCompaction:
     4. Merge both summaries with the same emergency prompt.
     5. Rebuild messages: system + merged summary + preserved safety region.
     """
+
+    # RFC-0026: stable canonical name persisted into CompactAutoVariant.strategy.
+    # Note: emergency-mode invocation tags this further as ``"<name>:emergency"``
+    # at the middleware layer; the suffix is appended at write time, not here.
+    name: ClassVar[str] = "user_model_full_trace_adaptive"
 
     def __init__(
         self,

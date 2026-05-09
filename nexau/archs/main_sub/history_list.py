@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from concurrent.futures import Future as ConcurrentFuture
 
     from nexau.archs.session import AgentRunActionKey, SessionManager
+    from nexau.archs.session.models.agent_run_action_model import ReplaceVariantBase
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,13 @@ class HistoryList(list[Message]):
                 assert isinstance(value, Message)
                 super().__setitem__(key, value)
 
-    def replace_all(self, new_messages: list[Message], *, update_baseline: bool = False) -> None:
+    def replace_all(
+        self,
+        new_messages: list[Message],
+        *,
+        update_baseline: bool = False,
+        replace_extra: ReplaceVariantBase | None = None,
+    ) -> None:
         """Replace all messages with smart detection.
 
         This method intelligently detects whether the operation is:
@@ -170,22 +177,62 @@ class HistoryList(list[Message]):
             update_baseline: If True, update baseline fingerprints to match new messages.
                            Use this when loading history from storage to set initial state.
                            Default is False to allow flush() to detect changes.
+            replace_extra: RFC-0026 — when provided, treats this call as a
+                           typed REPLACE event (compaction / ``/clear`` / etc.)
+                           and synchronously schedules the persist write with
+                           the typed variant. Implies ``update_baseline=True``
+                           so subsequent ``flush()`` doesn't double-write an
+                           untyped REPLACE inferred from fingerprint diff.
         """
         logger.debug(
-            "🔍 [HISTORY-DEBUG] replace_all: incoming=%d roles=%s, update_baseline=%s",
+            "🔍 [HISTORY-DEBUG] replace_all: incoming=%d roles=%s, update_baseline=%s, replace_extra=%s",
             len(new_messages),
             [m.role.value for m in new_messages],
             update_baseline,
+            type(replace_extra).__name__ if replace_extra is not None else None,
         )
         self.clear()
         super().extend(new_messages)
         if self._persistence_enabled:
             self._pending_messages.clear()
-            if update_baseline:
+            # RFC-0026: replace_extra implies update_baseline — the typed
+            # write below sets the post-REPLACE ground truth, so flush()
+            # must NOT compute a fingerprint diff against the old baseline.
+            if update_baseline or replace_extra is not None:
                 # Update baseline fingerprints to match the new message list
                 # This ensures flush() only persists truly new messages added after this call
                 current_non_system = [m for m in self if m.role != Role.SYSTEM]
                 self._baseline_fingerprints = self._compute_fingerprints(current_non_system)
+            if replace_extra is not None:
+                self._schedule_typed_replace(new_messages, replace_extra)
+
+    def _schedule_typed_replace(
+        self,
+        new_messages: list[Message],
+        extra: ReplaceVariantBase,
+    ) -> None:
+        """RFC-0026: schedule a typed REPLACE persist write.
+
+        Fire-and-forget on the owner event loop, mirroring :meth:`flush`.
+        Failures surface via :meth:`_on_task_done` → logger.error. No-op
+        when ``session_manager`` / ``history_key`` are missing (e.g.
+        in-process tests).
+        """
+        if not self._session_manager or not self._history_key:
+            return
+        run_id = self._run_id or "unknown"
+        root_run_id = self._root_run_id or "unknown"
+        self._schedule_async(
+            self._session_manager.agent_run_action.persist_replace(
+                key=self._history_key,
+                run_id=run_id,
+                root_run_id=root_run_id,
+                parent_run_id=self._parent_run_id,
+                agent_name=self._agent_name,
+                messages=new_messages,
+                extra=extra,
+            )
+        )
 
     @staticmethod
     def _fingerprint_message(msg: Message) -> str:

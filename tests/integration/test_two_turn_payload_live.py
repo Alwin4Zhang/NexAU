@@ -95,7 +95,18 @@ _GEMINI = _from_env(
     "gemini_rest",
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.llm, pytest.mark.external]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.llm,
+    pytest.mark.external,
+    # Moved out of PR-loop ``make test`` (which runs `-m "not live_nightly"`):
+    # this file's tests cover ``prompt_cache_key`` + cross-turn payload shape
+    # against real provider endpoints. The cache-hit assertion on turn 2
+    # depends on cumulative provider-side cache state (≥10 min staying-warm
+    # window), which is not deterministic enough for PR-loop CI. Drift
+    # detection runs nightly via ``make test-nightly``.
+    pytest.mark.live_nightly,
+]
 
 
 # Async spy classes — Agent.run() internally drives ``asyncio.run(run_async)``,
@@ -154,18 +165,23 @@ class _SecondTurnAnthropicSpy:
         return response
 
 
-def _safe_cached(usage: Any, details_attr: str) -> int:
-    """Return ``usage.<details_attr>.cached_tokens`` or 0.
+def _safe_cached(usage: Any, details_attr: str) -> int | None:
+    """Return ``usage.<details_attr>.cached_tokens`` or None.
 
-    OpenAI Chat / Responses ``usage`` objects can omit the nested
-    ``prompt_tokens_details`` / ``input_tokens_details`` block entirely
-    when the response carried no cache info (cold-cache cold-runner
-    scenario). Treat missing details as 0 cached tokens — same semantic
-    meaning, won't AttributeError on the assertion.
+    Distinguishes two cases that the prior version conflated as "0":
+
+    1. **Gateway omitted the details block entirely** (``prompt_tokens_details
+       is None``) — this happens unpredictably on northgate, even when the
+       upstream HAS cached tokens. We return None = "unknowable".
+    2. **Gateway provided details but cached_tokens is 0** — this is a real
+       cache miss. We return 0.
+
+    Callers must handle None explicitly (skip the assertion) so a flaky
+    gateway response shape doesn't masquerade as a cache regression.
     """
     details = getattr(usage, details_attr, None)
     if details is None:
-        return 0
+        return None
     return getattr(details, "cached_tokens", None) or 0
 
 
@@ -298,16 +314,15 @@ def test_two_turn_live_openai_chat_payload(session_manager: SessionManager) -> N
     assert payload.get("reasoning_effort") == "high"
 
     # Cache-stability invariant: turn 2's prefix is a superset of turn 1's,
-    # so cached_tokens(turn2) MUST be ≥ cached_tokens(turn1). A regression
-    # in our prefix construction (whitespace drift, system/messages reorder,
-    # extra metadata) would lower turn 2's cached count below turn 1's.
-    # Asserting strict ``> 0`` would conflate "cache cold globally on this
-    # CI runner" with "SDK broke our prefix" — only the latter is our bug.
+    # so cached_tokens(turn2) MUST be ≥ cached_tokens(turn1). Skip when
+    # either side returned None (gateway omitted ``prompt_tokens_details``
+    # — northgate flake; not a cache regression we can attribute).
     cached_1 = _safe_cached(resp1.usage, "prompt_tokens_details")
     cached_2 = _safe_cached(resp2.usage, "prompt_tokens_details")
-    assert cached_2 >= cached_1, (
-        f"OpenAI Chat: turn-2 cache regressed below turn-1 (turn1={cached_1}, turn2={cached_2}); usages: {resp1.usage}, {resp2.usage}"
-    )
+    if cached_1 is not None and cached_2 is not None:
+        assert cached_2 >= cached_1, (
+            f"OpenAI Chat: turn-2 cache regressed below turn-1 (turn1={cached_1}, turn2={cached_2}); usages: {resp1.usage}, {resp2.usage}"
+        )
 
 
 @pytest.mark.skipif(_OPENAI_RESPONSES is None, reason="LIVE_OPENAI_RESPONSES_* env vars not set")
@@ -321,14 +336,14 @@ def test_two_turn_live_openai_responses_payload(session_manager: SessionManager)
     assert isinstance(payload.get("input"), list)
     assert len(payload["input"]) >= 3
 
-    # Same invariant as Chat. Responses uses a different usage field shape
-    # (``input_tokens_details.cached_tokens``) — verifying it specifically
-    # catches Responses-path serializer drift (e.g. include/reasoning ordering).
+    # Same invariant as Chat. Skip when either side returned None.
     cached_1 = _safe_cached(resp1.usage, "input_tokens_details")
     cached_2 = _safe_cached(resp2.usage, "input_tokens_details")
-    assert cached_2 >= cached_1, (
-        f"OpenAI Responses: turn-2 cache regressed below turn-1 (turn1={cached_1}, turn2={cached_2}); usages: {resp1.usage}, {resp2.usage}"
-    )
+    if cached_1 is not None and cached_2 is not None:
+        assert cached_2 >= cached_1, (
+            f"OpenAI Responses: turn-2 cache regressed below turn-1 "
+            f"(turn1={cached_1}, turn2={cached_2}); usages: {resp1.usage}, {resp2.usage}"
+        )
 
 
 @pytest.mark.skipif(_ANTHROPIC is None, reason="LIVE_ANTHROPIC_* env vars not set")

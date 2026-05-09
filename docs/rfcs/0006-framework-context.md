@@ -97,6 +97,7 @@ class FrameworkContext:
     agents: AgentsAPI
     sandbox: SandboxAPI
     variables: VariablesAPI
+    history: HistoryAPI       # RFC-0026 新增：typed history 事件写入（compaction / /clear / 未来 /undo）
 
     # ══════════════════════════════════════
     # Team（独立领域，保持 property）
@@ -212,6 +213,32 @@ class VariablesAPI:
     @property
     def all(self) -> dict[str, str]:
         """All runtime variables."""
+        ...
+
+
+class HistoryAPI:
+    """Write-side typed-event API for agent history.
+
+    RFC-0026: 替代 RFC-0022 Phase 3 的 ``agent_state.history`` 反向引用。
+    Middleware / 工具作者通过 ``ctx.history.replace(messages, extra=variant)``
+    emit 显式的 typed REPLACE event（compaction / ``/clear`` / 未来
+    ``/compact <focus>``），不再跨层直写 HistoryList。
+
+    设计为 RPC-friendly：参数全部是 Pydantic 可序列化对象（Message +
+    ReplaceVariantBase 子类），无 in-process object handle 跨边界——
+    将来 lambda tool / 远程 middleware 把 ctx 远程化时，这就是一个 RPC stub。
+
+    Narrow first：只暴露 `replace`。APPEND（走 list 接口）/ UNDO / 读路径
+    在有真实 production caller 时再补。
+    """
+
+    def replace(
+        self,
+        messages: list[Message],
+        *,
+        extra: ReplaceVariantBase,  # required, kw-only
+    ) -> None:
+        """Emit a typed REPLACE event."""
         ...
 ```
 

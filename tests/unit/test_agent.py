@@ -1112,7 +1112,18 @@ class TestAgent:
             assert ctx_instance.errors and isinstance(ctx_instance.errors[0], RuntimeError)
 
     def test_run_with_error_handler(self, agent_config, global_storage):
-        """Test agent run with error handler."""
+        """Test agent run with error handler.
+
+        Asserts the error_handler callback fires and its return value is
+        returned to the caller. **Errors must NOT be persisted into history**
+        as assistant messages — that path was removed because:
+        - DeepSeek-style providers reject assistant messages without a
+          reasoning block, bricking the session on resume.
+        - Any provider gets confused by "I previously replied with an
+          error string" follow-up turns.
+        Errors are observed via logs + Langfuse instead (LLM calls are
+        wrapped in TraceContext which forwards exceptions to the tracer).
+        """
         with patch("nexau.archs.main_sub.agent.openai") as mock_openai:
             mock_openai.OpenAI.return_value = Mock()
 
@@ -1125,12 +1136,27 @@ class TestAgent:
             agent_config.error_handler = custom_error_handler
             agent = Agent(config=agent_config, global_storage=global_storage)
 
+            history_len_before = len(agent.history)
+
             with patch.object(agent.executor, "execute_async", new_callable=AsyncMock, side_effect=Exception("Test error")):
                 response = agent.run(message="Message")
 
                 assert "Error handled: Test error" in response
                 assert len(error_handler_called) == 1
-                assert agent.history[-1].role == Role.ASSISTANT
+
+                # Regression guard: error must NOT have appended an assistant
+                # message to history. Anything in history must NOT be an error
+                # synthesized by the framework.
+                error_synthesized_assistants = [
+                    m
+                    for m in agent.history[history_len_before:]
+                    if m.role == Role.ASSISTANT
+                    and any(getattr(b, "text", "").startswith(("Error: ", "Error handled: ")) for b in m.content)
+                ]
+                assert error_synthesized_assistants == [], (
+                    f"Error must not be persisted as assistant message, found: "
+                    f"{[m.get_text_content()[:50] for m in error_synthesized_assistants]}"
+                )
 
     def test_run_without_error_handler(self, agent_config, global_storage):
         """Test agent run without error handler."""

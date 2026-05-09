@@ -370,8 +370,23 @@ class TestMemoryLeakRegression:
         trace_memory = gs.get("trace_memory", {})
         assert "message_trace" not in trace_memory, "trace_memory.message_trace should not exist for non-generate_with_token agents"
 
-    def test_agent_run_action_gc_after_replace(self):
-        """After persist_replace, old AgentRunActionModel records should be deleted."""
+    def test_agent_run_action_persist_replace_is_append_only(self):
+        """RFC-0022 event sourcing: persist_replace must NOT delete prior
+        action rows. Originally this test enforced the opposite (PR #404
+        added a GC clause to persist_replace as a band-aid for
+        InMemoryDatabaseEngine OOM during long-running compaction loops),
+        but that clause broke RFC-0088 v2 SSOT for NAC, blocked /undo
+        across REPLACE boundaries, dropped audit/billing records, and
+        introduced a cross-task GC race when two REPLACEs landed
+        concurrently. The clause was removed; this test now guards the
+        append-only contract.
+
+        InMemoryDatabaseEngine memory growth under long compaction loops
+        is a separate concern — it should be solved at the engine layer
+        (size cap / FIFO eviction) or by switching dev tests to a
+        SQLite-tempfile backend, NEVER by destructive writes inside the
+        action service.
+        """
         import asyncio
 
         from nexau.archs.session import AgentRunActionKey
@@ -385,8 +400,10 @@ class TestMemoryLeakRegression:
 
             key = AgentRunActionKey(user_id="u1", session_id="s1", agent_id="a1")
 
-            with patch("nexau.archs.session.models.agent_run_action_model.time.time_ns", return_value=123456789):
-                # Create several APPEND records
+            with patch(
+                "nexau.archs.session.models.agent_run_action_model.time.time_ns",
+                return_value=123456789,
+            ):
                 for i in range(10):
                     await session_manager.agent_run_action.persist_append(
                         key=key,
@@ -397,7 +414,6 @@ class TestMemoryLeakRegression:
                         messages=[Message.user(f"msg {i}")],
                     )
 
-                # Count records before REPLACE
                 from nexau.archs.session.orm import AndFilter, ComparisonFilter
 
                 all_records = await engine.find_many(
@@ -412,8 +428,6 @@ class TestMemoryLeakRegression:
                 )
                 count_before = len(all_records)
 
-                # Now do a REPLACE. Keep the timestamp fixed to cover the
-                # collision case where old APPEND records share the REPLACE timestamp.
                 await session_manager.agent_run_action.persist_replace(
                     key=key,
                     run_id="replace_run",
@@ -421,7 +435,6 @@ class TestMemoryLeakRegression:
                     messages=[Message.user("compacted summary")],
                 )
 
-            # Count records after REPLACE
             all_records_after = await engine.find_many(
                 AgentRunActionModel,
                 filters=AndFilter(
@@ -434,9 +447,11 @@ class TestMemoryLeakRegression:
             )
             count_after = len(all_records_after)
 
-            print(f"\n  AgentRunAction GC: {count_before} records before REPLACE → {count_after} after")
-            assert count_after == 1, f"Expected 1 record (the REPLACE) after GC, got {count_after}"
-            assert count_before > count_after, f"GC should have removed records: before={count_before}, after={count_after}"
+            print(f"\n  AgentRunAction append-only: {count_before} records before REPLACE → {count_after} after")
+            assert count_after == count_before + 1, (
+                f"persist_replace must be append-only — expected {count_before + 1} rows "
+                f"(prior {count_before} APPENDs + 1 new REPLACE), got {count_after}"
+            )
 
         asyncio.run(_test())
 

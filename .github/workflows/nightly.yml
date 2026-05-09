@@ -53,10 +53,10 @@ jobs:
         LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
         LIVE_OPENAI_CHAT_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
         LIVE_OPENAI_CHAT_BASE_URL: https://northgate.xiaobei.top/v1
-        LIVE_OPENAI_CHAT_MODEL: gpt-5.2
+        LIVE_OPENAI_CHAT_MODEL: gpt-5.5
         LIVE_OPENAI_RESPONSES_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
         LIVE_OPENAI_RESPONSES_BASE_URL: https://northgate.xiaobei.top/v1
-        LIVE_OPENAI_RESPONSES_MODEL: gpt-5.2
+        LIVE_OPENAI_RESPONSES_MODEL: gpt-5.5
         LIVE_ANTHROPIC_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
         LIVE_ANTHROPIC_BASE_URL: https://northgate.xiaobei.top
         LIVE_ANTHROPIC_MODEL: claude-sonnet-4-5-20250929
@@ -65,6 +65,26 @@ jobs:
         LIVE_GEMINI_MODEL: gemini-3.1-flash-lite-preview
       run: |
         make test-nightly
+
+    # Upload nightly coverage with a distinct flag so codecov merges it
+    # with the PR-loop ``unittests-saas`` / ``unittests-selfhost`` flags.
+    # With carryforward enabled (see ``codecov.yml``), every PR's total
+    # = its own PR-loop coverage + the most recent nightly's LLM-path
+    # coverage. Without this upload, the LLM-touching ~3% would be
+    # permanently invisible on the codecov dashboard.
+    - name: Upload nightly coverage to Codecov
+      # Always upload, even when test-nightly failed — partial coverage
+      # from the cases that did pass is still useful.
+      if: always()
+      uses: codecov/codecov-action@v5
+      with:
+        name: test-coverage-nightly
+        files: ./coverage.xml
+        flags: unittests-nightly
+        verbose: true
+        use_oidc: true
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
     - name: Notify Lark on failure
       if: failure() && github.event_name == 'schedule'

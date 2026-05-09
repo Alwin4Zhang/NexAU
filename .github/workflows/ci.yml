@@ -383,17 +383,17 @@ jobs:
         # or thinking signature roundtrip". Plus 5 same-provider 2-turn
         # payload tests. All four LIVE_* providers route through northgate
         # except Gemini, which uses the dedicated 14.103 gateway key.
-        # ``gpt-5.2`` chosen for OpenAI Chat path because the deepseek-v4
+        # ``gpt-5.5`` chosen for OpenAI Chat path because the deepseek-v4
         # series (flash + pro) returns 400 ``unknown variant 'image_url'``
         # on the Chat endpoint, blocking 7 image cross-provider cases.
-        # gpt-5.2 supports vision on Chat and matches LIVE_OPENAI_RESPONSES_MODEL
+        # gpt-5.5 supports vision on Chat and matches LIVE_OPENAI_RESPONSES_MODEL
         # for clean Chat↔Responses A/B comparison.
         LIVE_OPENAI_CHAT_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
         LIVE_OPENAI_CHAT_BASE_URL: https://northgate.xiaobei.top/v1
-        LIVE_OPENAI_CHAT_MODEL: gpt-5.2
+        LIVE_OPENAI_CHAT_MODEL: gpt-5.5
         LIVE_OPENAI_RESPONSES_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
         LIVE_OPENAI_RESPONSES_BASE_URL: https://northgate.xiaobei.top/v1
-        LIVE_OPENAI_RESPONSES_MODEL: gpt-5.2
+        LIVE_OPENAI_RESPONSES_MODEL: gpt-5.5
         LIVE_ANTHROPIC_API_KEY: ${{ secrets.NORTHGATE_API_KEY }}
         LIVE_ANTHROPIC_BASE_URL: https://northgate.xiaobei.top
         LIVE_ANTHROPIC_MODEL: claude-sonnet-4-5-20250929
@@ -490,3 +490,82 @@ jobs:
       with:
         name: test-coverage-html-selfhost
         path: htmlcov/
+
+  # ---------------------------------------------------------------------------
+  # Postgres-flavour alembic migration tests.
+  #
+  # The SQLite migration tests in test-saas / test-selfhost catch most of the
+  # logic, but PG enforces several invariants SQLite ignores:
+  #
+  # - CHECK constraints (e.g. permission_rules.behavior IN ('allow','deny'))
+  # - JSONB column type vs SQLite's TEXT-backed JSON
+  # - Partial unique index WHERE clauses (multi-NULL semantics for
+  #   idempotency_key)
+  # - alembic baseline detection runs different catalog queries on PG
+  #
+  # Dedicated lightweight job so a PG-specific regression fails fast without
+  # waiting on the 30-min E2B test-saas job.
+  # ---------------------------------------------------------------------------
+  test-migrations-pg:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: nexau
+          POSTGRES_PASSWORD: nexau
+          POSTGRES_DB: nexau_migrations_test
+        ports:
+          - 5432:5432
+        # tcp_keepalives_idle bumps so the test doesn't see idle disconnects
+        # during the brief gap between connections; pg_isready loop in the
+        # health-check is the load-bearing readiness signal.
+        options: >-
+          --health-cmd "pg_isready -U nexau -d nexau_migrations_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - *setup-python
+    - *install-uv
+    - *install-deps
+
+    # Both PG drivers are opt-in (only Postgres tests need them):
+    # - psycopg2 is the sync driver alembic uses for upgrade_to_head + the
+    #   verification SELECTs in the test helpers.
+    # - asyncpg is the async driver SQLDatabaseEngine.from_url() picks for
+    #   ``postgresql+asyncpg://...`` URLs (test_postgres_fresh_db_*
+    #   constructs the async URL by swapping the dialect).
+    - name: Install Postgres drivers
+      run: uv pip install psycopg2-binary asyncpg
+
+    - name: Run alembic migration suite against Postgres
+      env:
+        NEXAU_PG_TEST_URL: postgresql+psycopg2://nexau:nexau@localhost:5432/nexau_migrations_test
+      run: |
+        # Run the same test_db_migrations.py file we run under SQLite —
+        # the PG-gated tests (including downgrade rollback paths) are
+        # skipif-guarded on NEXAU_PG_TEST_URL, so setting it here flips
+        # them on. SQLite tests run too as a belt-and-braces sanity check
+        # (cheap; ~0.5s). Coverage is on so PG-only branches in
+        # nexau/db/migrate.py + nexau/db/migrations/versions/* count.
+        uv run pytest tests/unit/test_db_migrations.py -v --timeout=60 \
+          --cov=nexau.db --cov-report=xml --cov-report=term
+
+    - name: Upload migration coverage to Codecov
+      if: always()
+      uses: codecov/codecov-action@v5
+      with:
+        name: test-coverage-migrations-pg
+        files: ./coverage.xml
+        flags: unittests-migrations-pg
+        fail_ci_if_error: false
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

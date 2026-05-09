@@ -124,11 +124,15 @@ The framework automatically injects `agent_state` when the function signature re
 
 ```python
 def tool_with_state(param: str, agent_state: AgentState):
-    """Tool that needs access to execution state."""
+    """Tool that needs access to execution state (legacy — prefer FrameworkContext)."""
     current_iteration = agent_state.current_iteration
-    history = agent_state.history
     # Use agent state...
 ```
+
+**Note (RFC-0026)**: `agent_state.history` was removed. The write-side typed-event API
+moved to `FrameworkContext.history` (see `ctx.history.replace(...)`). A read-side API on
+`ctx.history` is not yet exposed — file an issue if a tool genuinely needs to inspect
+prior messages.
 
 **Reserved Parameters**:
 

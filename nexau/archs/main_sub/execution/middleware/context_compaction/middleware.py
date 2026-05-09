@@ -39,6 +39,8 @@ from .history_archive import BoundaryRecord, HistoryArchiveWriter, build_archive
 from .llm_config_utils import normalize_summary_llm_overrides, resolve_summary_llm_config
 
 if TYPE_CHECKING:
+    from nexau.archs.session.models.agent_run_action_model import CompactAutoVariant
+
     from ....utils.token_counter import TokenCounter
     from .compact_stratigies.user_model_full_trace_adaptive import UserModelFullTraceAdaptiveCompaction
 
@@ -155,9 +157,7 @@ class ContextCompactionMiddleware(Middleware):
         else:
             self.emergency_compaction_strategy = None
 
-        emergency_name = (
-            self.emergency_compaction_strategy.__class__.__name__ if self.emergency_compaction_strategy is not None else "deferred"
-        )
+        emergency_name = self.emergency_compaction_strategy.name if self.emergency_compaction_strategy is not None else "deferred"
         logger.info(
             f"[ContextCompactionMiddleware] Initialized: "
             f"max_context_tokens={self.max_context_tokens}, "
@@ -431,6 +431,56 @@ class ContextCompactionMiddleware(Middleware):
             )
         )
 
+    def _build_compaction_variant(
+        self,
+        *,
+        mode: CompactionMode,
+        messages_before: list[Message],
+        messages_after: list[Message],
+        tokens_before: int | None,
+        tokens_after: int | None,
+        strategy_override: str | None = None,
+    ) -> CompactAutoVariant:
+        """RFC-0026: build the typed CompactAutoVariant for a compaction event.
+
+        ContextCompactionMiddleware is the only writer that fires today; both
+        regular (token-threshold trigger) and emergency (provider context
+        overflow retry) paths use ``CompactAutoVariant`` since neither carries
+        user intent — emergency mode is differentiated via the ``strategy``
+        field set to the emergency strategy class name.
+
+        ``CompactManualVariant`` / ``CompactFocusedVariant`` will be emitted by
+        future ``/compact`` and ``/compact <focus>`` handlers respectively;
+        those wiring points don't exist in the codebase yet.
+
+        Caller is responsible for delivering the variant via the
+        appropriate channel — both routes converge on ``ctx.history.replace``:
+
+        - **before_model / after_model hooks** (regular path): set
+          ``HookResult.replace_extra=variant`` on the returned HookResult.
+          Executor reads ``hook_input.replace_extra`` and emits via
+          ``framework_context.history.replace(messages, extra=variant)``
+          immediately after the hook chain returns.
+        - **wrap_model_call** (emergency path): call
+          ``params.framework_context.history.replace(messages, extra=variant)``
+          directly, since wrap_model_call doesn't return a HookResult.
+        """
+        from nexau.archs.session.models.agent_run_action_model import CompactAutoVariant, CompactStats
+
+        # Encode the auto/emergency split into the strategy string so the
+        # (regular vs emergency) call path is recoverable from the persisted
+        # event without needing a separate enum field on CompactStats.
+        strategy_name = strategy_override or self.compaction_strategy.name
+        if mode == "emergency":
+            strategy_name = f"{strategy_name}:emergency"
+        stats = CompactStats(
+            pre_message_count=len(messages_before),
+            post_message_count=len(messages_after),
+            pre_tokens=tokens_before,
+            post_tokens=tokens_after,
+        )
+        return CompactAutoVariant(strategy=strategy_name, stats=stats)
+
     def _get_current_tokens(self, hook_input: AfterModelHookInput) -> int | None:
         """Extract token count from model response usage information.
 
@@ -576,7 +626,7 @@ class ContextCompactionMiddleware(Middleware):
             tokens_before=current_tokens,
             tokens_after=after_tokens,
             trigger_reason=trigger_reason,
-            strategy_name=type(self.compaction_strategy).__name__,
+            strategy_name=self.compaction_strategy.name,
         )
 
         self._compact_count += 1
@@ -593,12 +643,29 @@ class ContextCompactionMiddleware(Middleware):
             compacted_token_count=after_tokens,
         )
 
+        # RFC-0026: typed REPLACE flows through the generic HistoryEvent
+        # discriminated-union slot on HookResult, not a per-event-type field.
+        # Executor reads ``hook_input.history_event`` and routes to
+        # ``ctx.history.replace(...)``.
+        from ...history_events import ReplaceEvent
+
+        replace_event = ReplaceEvent(
+            messages=compacted_messages,
+            extra=self._build_compaction_variant(
+                mode="regular",
+                messages_before=messages,
+                messages_after=compacted_messages,
+                tokens_before=current_tokens,
+                tokens_after=after_tokens,
+            ),
+        )
+
         logger.info(
             "[ContextCompactionMiddleware] Pre-call compaction complete: %d -> %d messages",
             original_count,
             len(compacted_messages),
         )
-        return HookResult.with_modifications(messages=compacted_messages)
+        return HookResult.with_modifications(messages=compacted_messages, history_event=replace_event)
 
     def _build_emergency_summarize_fn(self, params: ModelCallParams) -> Callable[[list[Message], str, int], str]:
         if params.llm_config is None:
@@ -704,7 +771,7 @@ class ContextCompactionMiddleware(Middleware):
             after_tokens = self._estimate_tokens(compacted_messages, params.tools)
 
             # RFC-0021: 紧急路径也归档（emergency strategy 名字单独标）
-            emergency_strategy_name = type(self.emergency_compaction_strategy).__name__
+            emergency_strategy_name = self.emergency_compaction_strategy.name
             compacted_messages = self._maybe_archive_compaction(
                 agent_state=params.agent_state,
                 messages_before=list(original_messages),
@@ -759,6 +826,24 @@ class ContextCompactionMiddleware(Middleware):
                 original_token_count=before_tokens,
                 compacted_token_count=after_tokens,
             )
+
+            # RFC-0026: emergency path can't return a HookResult (we're inside
+            # the LLM-retry call chain, not a hook). Emit through the public
+            # FrameworkContext API — same canonical operation the executor
+            # would route through, just invoked here because we know the WHY
+            # right now. RPC-friendly: only Pydantic args cross the boundary.
+            if params.framework_context is not None:
+                params.framework_context.history.replace(
+                    compacted_messages,
+                    extra=self._build_compaction_variant(
+                        mode="emergency",
+                        messages_before=list(original_messages),
+                        messages_after=compacted_messages,
+                        tokens_before=before_tokens,
+                        tokens_after=after_tokens,
+                        strategy_override=emergency_strategy_name,
+                    ),
+                )
 
             compacted_params = replace(params, messages=compacted_messages)
             return call_next(compacted_params)
@@ -862,7 +947,7 @@ class ContextCompactionMiddleware(Middleware):
             tokens_before=current_tokens,
             tokens_after=compacted_tokens,
             trigger_reason=trigger_reason,
-            strategy_name=type(self.compaction_strategy).__name__,
+            strategy_name=self.compaction_strategy.name,
         )
         compacted_message_count = len(compacted_messages)
 
@@ -881,13 +966,27 @@ class ContextCompactionMiddleware(Middleware):
             compacted_token_count=compacted_tokens,
         )
 
+        # RFC-0026: typed REPLACE flows through the generic HistoryEvent slot.
+        from ...history_events import ReplaceEvent
+
+        replace_event = ReplaceEvent(
+            messages=compacted_messages,
+            extra=self._build_compaction_variant(
+                mode="regular",
+                messages_before=messages,
+                messages_after=compacted_messages,
+                tokens_before=current_tokens,
+                tokens_after=compacted_tokens,
+            ),
+        )
+
         logger.info(
             f"[ContextCompactionMiddleware] Compaction complete: "
             f"{original_message_count} -> {compacted_message_count} messages "
             f"({original_message_count - compacted_message_count} removed)"
         )
 
-        return HookResult.with_modifications(messages=compacted_messages)
+        return HookResult.with_modifications(messages=compacted_messages, history_event=replace_event)
 
     def _sync_strategy_global_storage(self, agent_state: Any | None) -> None:
         """Update the compaction strategy's global_storage from agent_state.

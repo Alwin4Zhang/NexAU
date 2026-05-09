@@ -301,6 +301,7 @@ class TestCcAgentConfigPipeline:
 
 
 @pytest.mark.llm
+@pytest.mark.live_nightly
 @pytest.mark.timeout(180)
 class TestReadonlyAutoAllow:
     """Readonly tools (no permissions) should auto-allow, no pending."""
@@ -401,9 +402,19 @@ class TestReadonlyAutoAllow:
 
 
 @pytest.mark.llm
+@pytest.mark.live_nightly
 @pytest.mark.timeout(180)
 class TestEmptyRulesAsk:
-    """Write/execute tools with empty rules → AskPermission → pending_tool_calls."""
+    """Write/execute tools with empty rules → AskPermission → pending_tool_calls.
+
+    NOTE: ``live_nightly`` — these tests issue real LLM calls and assert on
+    *which tool the model picks* (e.g. expects apply_patch but the model may
+    sometimes call edit/write_file). That non-determinism is a model-behavior
+    test, not a permission-machinery test, and shouldn't gate PR merges. The
+    permission state machine itself is exercised separately by deterministic
+    unit / fixture-driven tests; these stay live-nightly as drift detection
+    against model upgrades + system-prompt changes.
+    """
 
     @pytest.mark.anyio
     async def test_write_file_ask(self, tmp_path: Path) -> None:
@@ -532,6 +543,7 @@ class TestEmptyRulesAsk:
 
 
 @pytest.mark.llm
+@pytest.mark.live_nightly
 @pytest.mark.timeout(180)
 class TestAllowRulesPass:
     """Pre-loaded allow rules → tools execute without ask."""
@@ -617,6 +629,7 @@ class TestAllowRulesPass:
 
 
 @pytest.mark.llm
+@pytest.mark.live_nightly
 @pytest.mark.timeout(180)
 class TestDenyRulesBlocked:
     """Pre-loaded deny rules → PermissionDenied → error returned to LLM, no pending."""
@@ -666,6 +679,7 @@ class TestDenyRulesBlocked:
 
 
 @pytest.mark.llm
+@pytest.mark.live_nightly
 @pytest.mark.timeout(180)
 class TestWildcardAllowAll:
     """Wildcard ** rule → auto-allow everything."""
@@ -700,6 +714,7 @@ class TestWildcardAllowAll:
 
 
 @pytest.mark.llm
+@pytest.mark.live_nightly
 @pytest.mark.timeout(180)
 class TestProtectedPaths:
     """Protected paths (.git) → AskPermission even with wildcard allow."""
@@ -723,6 +738,7 @@ class TestProtectedPaths:
 
 
 @pytest.mark.llm
+@pytest.mark.live_nightly
 @pytest.mark.timeout(180)
 class TestFullLifecycle:
     """Full ask → resolve → resume lifecycle."""
@@ -797,6 +813,7 @@ class TestFullLifecycle:
 
 
 @pytest.mark.llm
+@pytest.mark.live_nightly
 @pytest.mark.timeout(180)
 class TestPersistentAllow:
     """After resolve(allow), same permission_key auto-passes on second call."""
@@ -828,6 +845,7 @@ class TestPersistentAllow:
 
 
 @pytest.mark.llm
+@pytest.mark.live_nightly
 @pytest.mark.timeout(180)
 class TestMixedParallel:
     """Readonly + write tools called in parallel in one turn."""

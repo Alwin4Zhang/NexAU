@@ -36,6 +36,27 @@ flags:
     paths:
       - nexau/
     carryforward: true
+  unittests-migrations-pg:
+    # Postgres-only alembic migration suite (test-migrations-pg job). The
+    # SQLite path of the same tests is in unittests-saas; this flag covers
+    # the PG-only branches (downgrade DDL, partial unique index WHERE
+    # clause, type dispatch differences). Carryforward so the union with
+    # unittests-saas is the patch coverage shown on PRs.
+    paths:
+      - nexau/db/
+    carryforward: true
+  unittests-nightly:
+    # Live-LLM tests excluded from PR loop (``@pytest.mark.llm`` and
+    # ``live_nightly``). Uploaded by .github/workflows/nightly.yml on
+    # the daily schedule. Carryforward is load-bearing: every PR's
+    # codecov total = its own ``unittests-saas`` + the most recent
+    # successful ``unittests-nightly``. Without this, the ~3% of code
+    # only reachable via live LLM (provider routing edges, async
+    # dispatch, sub-agent invocation) would look uncovered on every
+    # PR even though nightly verifies it.
+    paths:
+      - nexau/
+    carryforward: true
 
 # Component-level tracking — shows per-module coverage changes in PR comment
 component_management:

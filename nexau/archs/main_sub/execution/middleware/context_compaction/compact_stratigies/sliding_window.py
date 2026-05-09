@@ -16,7 +16,7 @@
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import anthropic
 import openai
@@ -93,6 +93,10 @@ class SlidingWindowCompaction:
     3. Compresses older iterations using LLM summarization
     4. Handles large inputs safely via chunked summarization
     """
+
+    # RFC-0026: stable canonical name persisted into CompactAutoVariant.strategy.
+    # Decoupled from Python class name so refactors don't drift downstream data.
+    name: ClassVar[str] = "sliding_window"
 
     # Reserved tokens for compact_prompt + LLM output overhead
     _SUMMARY_RESERVED_TOKENS = 4096

@@ -91,7 +91,69 @@ if TYPE_CHECKING:
     from nexau.archs.sandbox.base_sandbox import BaseSandbox
     from nexau.archs.session import SessionManager
 
+    from .history_events import HistoryEvent
+
 logger = logging.getLogger(__name__)
+
+
+def _sync_history(
+    history: object,
+    messages: list[Message],
+) -> None:
+    """RFC-0026: end-of-iteration / boundary sync — feed current messages
+    into HistoryList. Untyped (no ``history_event``); HistoryList's
+    fingerprint-diff fallback decides between APPEND and untyped REPLACE
+    based on what changed since the last baseline.
+
+    Typed history events emitted by middleware land eagerly via
+    :func:`_emit_pending_history_event` at the middleware boundary
+    (before_model / after_model), not via this helper.
+
+    No-op when ``history`` isn't a HistoryList (legacy list/dict paths).
+    """
+    if not isinstance(history, HistoryList):
+        return
+    history.replace_all(messages)
+
+
+def _emit_pending_history_event(
+    framework_context: "FrameworkContext",
+    event: "HistoryEvent | None",
+) -> None:
+    """RFC-0026: eager typed-event write at the middleware boundary.
+
+    When a middleware (compaction / future ``/clear`` / ``/undo``) sets
+    ``HookResult.history_event``, the executor calls this immediately
+    after the middleware chain returns. Dispatches by event type to the
+    matching public ``ctx.history.*`` API method.
+
+    Subsequent ``_sync_history`` calls in the same iteration see baseline
+    aligned and don't double-write.
+
+    Forward-compat: ``HistoryEvent`` is a discriminated union; unknown
+    event types decode as ``UnknownEvent`` and this dispatcher silently
+    skips them — old SDK reading a future event type degrades to "drop
+    the typed signal, fall back to fingerprint diff" rather than crash.
+
+    Code paths that can't return a HookResult (emergency compaction inside
+    ``wrap_model_call``) call ``params.framework_context.history.replace``
+    directly with their own ``extra``; both routes converge on the same
+    canonical API method.
+    """
+    if event is None:
+        return
+    # Local import to avoid Pydantic union construction during executor
+    # module import (HistoryEvent uses runtime Discriminator).
+    from .history_events import ReplaceEvent
+
+    if isinstance(event, ReplaceEvent):
+        framework_context.history.replace(event.messages, extra=event.extra)
+        return
+    # AppendEvent / UndoEvent / UnknownEvent: no public ctx.history.*
+    # method exposed yet (per RFC-0026's "narrow first" rule). Silently
+    # skip — when a real producer arrives, both add the API method on
+    # ``HistoryAPI`` and the dispatch branch here.
+    logger.debug("RFC-0026: skipping history_event of type %r — no producer wired yet", type(event).__name__)
 
 
 class _IterationOutcome(Enum):
@@ -572,6 +634,8 @@ class Executor:
         self._shutdown_event.clear()
 
         # RFC-0006: 构建 FrameworkContext，供工具函数通过 ctx 参数访问框架服务
+        # RFC-0026: pass HistoryList handle so middleware (compaction)
+        # can emit typed REPLACE via ctx.history.replace(...).
         framework_context = FrameworkContext(
             agent_name=self.agent_name,
             agent_id=self.agent_id,
@@ -579,6 +643,7 @@ class Executor:
             root_run_id=agent_state.root_run_id,
             _tool_registry=self._tool_registry,
             _shutdown_event=self._shutdown_event,
+            _history=history if isinstance(history, HistoryList) else None,
         )
 
         # RFC-0019: 预加载权限规则缓存
@@ -681,7 +746,7 @@ class Executor:
                 if self.team_mode and not any(m.role != Role.SYSTEM for m in messages):
                     # Sync messages back to HistoryList before blocking wait
                     if isinstance(_origin_history, HistoryList):
-                        _origin_history.replace_all(messages)
+                        _sync_history(_origin_history, messages)
                     if not self._wait_for_messages():
                         break
                     iteration += 1
@@ -702,7 +767,7 @@ class Executor:
                         )
                         # Sync messages back to HistoryList before blocking wait
                         if isinstance(_origin_history, HistoryList):
-                            _origin_history.replace_all(messages)
+                            _sync_history(_origin_history, messages)
                         if not self._wait_for_messages():
                             break
                         iteration += 1
@@ -722,6 +787,13 @@ class Executor:
                         )
                     except Exception as e:
                         logger.warning(f"⚠️ Before-model middleware execution failed: {e}")
+                    # RFC-0026: typed REPLACE emitted by the chain (e.g.
+                    # compaction) lands eagerly on disk so the action stream
+                    # carries the typed variant — matches Phase 3 semantics.
+                    _emit_pending_history_event(
+                        framework_context,
+                        before_model_hook_input.history_event,
+                    )
 
                 tools_payload = None
                 if self.use_structured_tool_calls:
@@ -785,6 +857,9 @@ class Executor:
                     tools=tools_payload,
                     shutdown_event=self._shutdown_event,
                     token_trace_session=token_trace_session,
+                    # RFC-0026: emergency compaction in wrap_model_call
+                    # writes typed REPLACE via ctx.history.replace(...).
+                    framework_context=framework_context,
                 )
                 if model_response is None:
                     break
@@ -976,7 +1051,7 @@ class Executor:
                         self._mark_waiting_for_user()
                         # Sync messages back to HistoryList before blocking wait
                         if isinstance(_origin_history, HistoryList):
-                            _origin_history.replace_all(messages)
+                            _sync_history(_origin_history, messages)
                         if not self._wait_for_messages():
                             force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
                             final_response = processed_response
@@ -1071,7 +1146,7 @@ class Executor:
             # Sync intermediate iteration messages back to HistoryList so that
             # _run_inner's error/finally flush can persist them (fixes #390)
             if isinstance(_origin_history, HistoryList):
-                _origin_history.replace_all(messages)
+                _sync_history(_origin_history, messages)
             self._store_token_trace(token_trace_session)
             # RFC-0009: 重置同步计数以匹配可能被压缩的 messages，确保下次 run 正确同步新消息
             if token_trace_session is not None:
@@ -1119,6 +1194,9 @@ class Executor:
                 root_run_id=agent_state.root_run_id,
                 _tool_registry=self._tool_registry,
                 _shutdown_event=self._shutdown_event,
+                # RFC-0026: typed REPLACE writers (compaction) reach
+                # HistoryList through ctx.history.replace(...).
+                _history=history if isinstance(history, HistoryList) else None,
             ),
             runtime_client=runtime_client,
             custom_llm_client_provider=custom_llm_client_provider,
@@ -1190,7 +1268,7 @@ class Executor:
 
         finally:
             if isinstance(state.origin_history, HistoryList):
-                state.origin_history.replace_all(state.messages)
+                _sync_history(state.origin_history, state.messages)
             self._store_token_trace(state.token_trace_session)
             if state.token_trace_session is not None:
                 state.token_trace_session.synced_message_count = len(state.messages)
@@ -1266,7 +1344,7 @@ class Executor:
         # 2. team_mode: 跳过无用户内容的 LLM 调用
         if self.team_mode and not any(m.role != Role.SYSTEM for m in state.messages):
             if isinstance(state.origin_history, HistoryList):
-                state.origin_history.replace_all(state.messages)
+                _sync_history(state.origin_history, state.messages)
             if not await asyncio.to_thread(self._wait_for_messages):
                 return _IterationOutcome.BREAK
             state.iteration += 1
@@ -1281,7 +1359,7 @@ class Executor:
                     break
             if last_non_system is not None and last_non_system.role == Role.ASSISTANT:
                 if isinstance(state.origin_history, HistoryList):
-                    state.origin_history.replace_all(state.messages)
+                    _sync_history(state.origin_history, state.messages)
                 if not await asyncio.to_thread(self._wait_for_messages):
                     return _IterationOutcome.BREAK
                 state.iteration += 1
@@ -1303,6 +1381,11 @@ class Executor:
                 )
             except Exception as e:
                 logger.warning(f"⚠️ Before-model middleware execution failed: {e}")
+            # RFC-0026: see sync-path comment for rationale.
+            _emit_pending_history_event(
+                state.framework_context,
+                before_model_hook_input.history_event,
+            )
 
         # 5. 快照工具定义 & token 计算
         tools_payload = None
@@ -1340,6 +1423,8 @@ class Executor:
             tools=tools_payload,
             shutdown_event=self._shutdown_event,
             token_trace_session=state.token_trace_session,
+            # RFC-0026: see sync-path comment.
+            framework_context=state.framework_context,
         )
         if model_response is None:
             return _IterationOutcome.BREAK
@@ -1424,8 +1509,46 @@ class Executor:
 
         if self.team_mode:
             self._consecutive_text_only_count = 0
+
+        # RFC-0022 Phase 2: persist per-iter progress before continuing.
+        # Without this, all assistant + tool_result messages produced across
+        # N iterations only land in the DB after the final iter (via the
+        # end-of-run flush in agent.py). A crash mid-loop would lose all
+        # already-completed iterations. Per-iter flush makes each completed
+        # iter durable, so the next reader sees real progress.
+        await self._persist_iter_progress(state)
+
         state.iteration += 1
         return _IterationOutcome.CONTINUE
+
+    async def _persist_iter_progress(self, state: _AsyncIterationState) -> None:
+        """RFC-0022 Phase 2: per-iter persistence of newly accumulated messages.
+
+        Sync ``state.messages`` (executor's local list, where assistant +
+        tool_result rows for THIS iter were just appended) back to the bound
+        ``HistoryList`` and flush. The fingerprint diff in ``HistoryList.flush``
+        will detect the new tail and emit ``APPEND([this iter's messages])``.
+
+        Called at the end of every CONTINUE iter. Crash before the next iter
+        leaves the DB with all completed iters durable; only the in-flight
+        iter's partial output (already represented in Redis live events) is
+        lost from DB until the next manual recovery.
+
+        No-op when ``state.origin_history`` is not a HistoryList (e.g. tests
+        passing a plain list, or sync execute() path which has its own
+        end-of-run flush).
+        """
+        history = state.origin_history
+        if not isinstance(history, HistoryList):
+            return
+        history.replace_all(state.messages)
+        try:
+            await history.flush_async()
+        except Exception as exc:
+            # Per-iter flush is best-effort. Failure here means the iter's
+            # messages stay in _pending and the next flush (or end-of-run
+            # flush) catches them. Don't fail the run.
+            logger.warning("[STREAM] per-iter flush failed (will retry next flush): %s", exc)
 
     def _append_tool_result_messages(
         self,
@@ -1534,7 +1657,7 @@ class Executor:
 
             self._mark_waiting_for_user()
             if isinstance(state.origin_history, HistoryList):
-                state.origin_history.replace_all(state.messages)
+                _sync_history(state.origin_history, state.messages)
             if not await asyncio.to_thread(self._wait_for_messages):
                 state.force_stop_reason = AgentStopReason.NO_MORE_TOOL_CALLS
                 state.final_response = processed_response
@@ -1615,6 +1738,11 @@ class Executor:
                 )
             except Exception as e:
                 logger.warning(f"⚠️ After-model middleware execution failed: {e}")
+            # RFC-0026: see sync-path comment for rationale.
+            _emit_pending_history_event(
+                framework_context,
+                hook_input.history_event,
+            )
 
         if not parsed_response or not parsed_response.has_calls():
             if force_continue:
@@ -2078,6 +2206,11 @@ class Executor:
                 parsed_response, current_messages, force_continue = self.middleware_manager.run_after_model(hook_input)
             except Exception as e:
                 logger.warning(f"⚠️ After-model middleware execution failed: {e}")
+            # RFC-0026: see before_model sync-path comment for rationale.
+            _emit_pending_history_event(
+                framework_context,
+                hook_input.history_event,
+            )
 
         # If no calls found after hooks, check if we should force continue
         if not parsed_response or not parsed_response.has_calls():

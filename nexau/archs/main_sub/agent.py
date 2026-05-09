@@ -72,6 +72,7 @@ from nexau.archs.sandbox import (
     LocalSandboxManager,
 )
 from nexau.archs.session import AgentRunActionKey, SessionManager
+from nexau.archs.session.models.agent_run_action_model import RunStatus
 from nexau.archs.session.orm import InMemoryDatabaseEngine
 from nexau.archs.tool import Tool
 from nexau.archs.tool.builtin.tool_search import tool_search
@@ -1154,13 +1155,17 @@ class Agent:
                 parent_run_id=parent_run_id,
             )
 
+            # RFC-0022 Phase 2: history_key needed both for the legacy first-run
+            # restore and for RUN_START / RUN_END markers below; lift it out of
+            # the conditional so both paths share one key.
+            history_key = AgentRunActionKey(
+                user_id=self._user_id,
+                session_id=self._session_id,
+                agent_id=self.agent_id,
+            )
+
             # Load history from storage if this is the first run (history is empty)
             if not self.history:
-                history_key = AgentRunActionKey(
-                    user_id=self._user_id,
-                    session_id=self._session_id,
-                    agent_id=self.agent_id,
-                )
                 stored_messages = await self._session_manager.agent_run_action.load_messages(key=history_key)
                 stored_non_system_messages = [msg for msg in stored_messages if msg.role != Role.SYSTEM]
                 logger.debug(
@@ -1207,6 +1212,40 @@ class Agent:
             else:
                 self.history.extend(message)
 
+            # RFC-0022 Phase 2: eager-flush the user message BEFORE the agent
+            # iter loop runs. Previously the user_message was only persisted as
+            # part of the end-of-run batch APPEND, so any crash / OOM / network
+            # failure during iter would lose the user's submission entirely
+            # — the playground UI's optimistic write was the only surviving
+            # record (see parity scan findings).
+            #
+            # Now: APPEND([user_message]) lands immediately. Subsequent iters
+            # add their messages to ``_pending`` and the per-iter flush below
+            # (see executor.py async iter loop) catches them at iter
+            # boundaries. End-of-run flush remains as the final safety net.
+            #
+            # Net cost: 2+ INSERTs per turn instead of 1, but each is a small
+            # single-message payload and the user-visibility win pays for it
+            # many times over (was the #1 source of UI/SDK drift in our
+            # parity scan against test cluster prod-like data).
+            await self.history.flush_async()
+
+            # RFC-0022 Phase 2: write RUN_START lifecycle marker right after
+            # the triggering user message lands in history. Class A
+            # (Reader-NOOP) — fold output unchanged. The marker carries
+            # `run_id` + `created_at_ns` + `parent_run_id`, which is all
+            # the call-tree boundary info current consumers need; trace_id
+            # is wired separately (RFC-0024).
+            #
+            # Both root and sub-agent runs write their own RUN_START.
+            await self._session_manager.agent_run_action.persist_run_start(
+                key=history_key,
+                run_id=run_id,
+                root_run_id=root_run_id,
+                parent_run_id=parent_run_id,
+                agent_name=self.agent_name,
+            )
+
             # RFC-0009: 懒创建 token trace session，跨 run 复用
             if self.config.llm_config and self.config.llm_config.api_type == "generate_with_token" and self._token_trace_session is None:
                 self._token_trace_session = TokenTraceSession(self.config.llm_config)
@@ -1250,6 +1289,10 @@ class Agent:
                 await self._resume_pending_tool_calls(pending, agent_state, resume_ctx)
                 self.history.flush()
 
+            # RFC-0022 Phase 2: track run terminal status for RUN_END marker.
+            run_status: RunStatus = "ok"
+            run_reason: str | None = None
+
             # Execute with or without tracing
             try:
                 if tracer:
@@ -1269,6 +1312,10 @@ class Agent:
                         runtime_client=runtime_client,
                         custom_llm_client_provider=custom_llm_client_provider,
                     )
+
+                # RFC-0022 Phase 2: stop_signal triggered → cancelled, not ok.
+                if self.executor.stop_signal:
+                    run_status = "cancelled"
 
                 # stop_signal 时由 stop() 负责持久化，run_async 不重复写
                 if not self.executor.stop_signal:
@@ -1296,6 +1343,9 @@ class Agent:
                 return response
 
             except Exception as e:
+                # RFC-0022 Phase 2: surface error → status="error" + truncated reason
+                run_status = "error"
+                run_reason = f"{type(e).__name__}: {str(e)[:200]}"
                 # RFC-0001: 中断或异常时也持久化 session state
                 try:
                     # stop_signal 时由 stop() 负责持久化，run_async 不重复写
@@ -1307,6 +1357,59 @@ class Agent:
                 raise
 
             finally:
+                # RFC-0022 Phase 2: write RUN_END marker before everything else.
+                # persist_run_end is idempotent (run_id:end key) and never raises,
+                # so safe to call from finally even if the run was already torn
+                # down by the caller. Class A (Reader-NOOP) — fold output unchanged.
+                #
+                # Cancellation hardening: when the run is cancelled (RFC-0001
+                # client-disconnect-stop, agent.stop(force=True), parent task
+                # cancellation), the current task is in a cancelled state and
+                # any bare ``await`` in finally re-raises CancelledError
+                # *before* the awaited coroutine starts executing — so the
+                # RUN_END row never lands. Wrap in ``asyncio.shield`` so the
+                # persist call gets a chance to complete even on the
+                # cancellation path. We then re-await with a small timeout to
+                # cap unbounded wait if shield itself is also cancelled.
+                #
+                # If both layers are cancelled (extreme: pod kill mid-shield),
+                # the read-side ``load_messages`` falls back to "no RUN_END,
+                # treat as in_progress" — graceful degradation, no broken
+                # state. Real fix for that case is at the read-side bandaid
+                # (mirror of the orphan tool_use synthesis) — separate issue.
+                try:
+                    persist_coro = self._session_manager.agent_run_action.persist_run_end(
+                        key=history_key,
+                        run_id=run_id,
+                        root_run_id=root_run_id,
+                        parent_run_id=parent_run_id,
+                        agent_name=self.agent_name,
+                        status=run_status,
+                        reason=run_reason,
+                    )
+                    # Shield-wait with a 5s cap: enough for a single PG INSERT
+                    # round-trip on a healthy cluster; bounded so we don't hang
+                    # the cleanup path on a stuck DB.
+                    await asyncio.wait_for(asyncio.shield(persist_coro), timeout=5.0)
+                except asyncio.CancelledError:
+                    # Outer cancellation came in DURING the shielded persist.
+                    # The shielded coro keeps running on the loop; we just
+                    # can't await its completion. Re-raise so the caller still
+                    # sees cancellation. RUN_END will land slightly after
+                    # the agent task ends — acceptable race.
+                    raise
+                except TimeoutError:
+                    logger.warning(
+                        "RUN_END persist timed out after 5s — task continues in background (run_id=%s status=%s)",
+                        run_id,
+                        run_status,
+                    )
+                except Exception as exc:
+                    # persist_run_end already swallows internal errors; this catch
+                    # is belt-and-suspenders against unforeseen issues so we never
+                    # mask the original exception (if any) bubbling out of try.
+                    logger.warning("RUN_END persist failed (ignored): %s", exc)
+
                 # async/sync 技术债修复: 关闭 async LLM client 防止 event loop 关闭后
                 # httpx.AsyncClient.__del__ 崩溃。下次 run 时在下方 lazy re-init 重建。
                 await self._close_async_llm_client()
@@ -1449,23 +1552,34 @@ class Agent:
                 str(e)[:100],
                 len(self.history),
             )
+            # Errors are NOT persisted into history. Previously this branch
+            # appended ``Message.assistant(error_text)`` rows, but those rows:
+            # (1) carry no ReasoningBlock, which DeepSeek-style providers reject
+            #     when the resumed history is sent back ("assistant must have
+            #     thinking") — bricks the session forever.
+            # (2) corrupt model context generally — every subsequent turn sees
+            #     "I previously replied with a stack trace" and produces
+            #     nonsense follow-ups regardless of provider.
+            #
+            # Errors are still observed:
+            # - Logged at ERROR level above by ``logger.debug``-equivalent
+            #   exception logging upstream.
+            # - Captured in Langfuse: every LLM call is wrapped in
+            #   ``TraceContext(...)``; ``__exit__`` forwards the exception
+            #   to ``langfuse_adapter.end_span(error=...)``, which sets
+            #   ``level=ERROR`` + ``status_message=str(error)`` on the span.
+            # - The error_handler callback (if configured) still fires and
+            #   its return value is returned to the caller — that's the
+            #   appropriate channel for surfacing errors to user code.
             if self.config.error_handler:
                 error_response = self.config.error_handler(e, self, merged_context)
-                assistant_error_message = Message.assistant(error_response)
-                # HistoryList will automatically persist this message
-                self.history.append(assistant_error_message)
-
-                # Flush pending messages to persistence
+                # Flush whatever was already in history before the failure
+                # (e.g. user message) so we don't lose pre-error progress.
                 self.history.flush()
-
                 return error_response
             else:
-                assistant_error = Message.assistant(f"Error: {str(e)}")
-                self.history.append(assistant_error)
-
-                # Flush pending messages to persistence
+                # Same flush as above before re-raising.
                 self.history.flush()
-
                 raise
         finally:
             # RFC-0001: 无论正常返回、异常还是取消，都尝试 flush 未持久化的消息

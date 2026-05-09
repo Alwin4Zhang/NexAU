@@ -91,8 +91,8 @@ class TestResumeCommands:
                 "current": False,
             },
         ]
-        runtime._session_store.load_session.side_effect = (
-            lambda session_id: {
+        runtime._session_store.load_session.side_effect = lambda session_id: (
+            {
                 "history": [
                     {"role": "user", "content": [{"type": "text", "text": "earliest user input"}]},
                     {"role": "assistant", "content": [{"type": "text", "text": "reply"}]},

@@ -29,7 +29,10 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+if TYPE_CHECKING:
+    from nexau.archs.main_sub.framework_context import FrameworkContext
 
 import httpx
 import openai
@@ -420,6 +423,7 @@ class LLMCaller:
         openai_client: Any | None = None,
         shutdown_event: threading.Event | None = None,
         token_trace_session: TokenTraceSession | None = None,
+        framework_context: "FrameworkContext | None" = None,
     ) -> ModelResponse | None:
         """Call LLM with the given messages and return normalized response.
 
@@ -520,6 +524,7 @@ class LLMCaller:
             retry_attempts=self.retry_attempts,
             shutdown_event=shutdown_event,
             token_trace_session=token_trace_session,
+            framework_context=framework_context,
         )
 
         def base_call(params: ModelCallParams) -> ModelResponse | None:
@@ -804,6 +809,7 @@ class LLMCaller:
         openai_client: Any | None = None,
         shutdown_event: threading.Event | None = None,
         token_trace_session: TokenTraceSession | None = None,
+        framework_context: "FrameworkContext | None" = None,
     ) -> ModelResponse | None:
         """Async version of call_llm.
 
@@ -878,6 +884,7 @@ class LLMCaller:
             retry_attempts=self.retry_attempts,
             shutdown_event=shutdown_event,
             token_trace_session=token_trace_session,
+            framework_context=framework_context,
         )
 
         # 使用 async retry wrapper

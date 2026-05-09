@@ -33,8 +33,10 @@ if TYPE_CHECKING:
     from nexau.archs.tool.tool import StructuredToolDefinitionLike
 
     from ..agent_state import AgentState
+    from ..framework_context import FrameworkContext
     from ..token_trace_session import TokenTraceSession
     from .executor import AgentStopReason
+    from .history_events import HistoryEvent
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,14 @@ class BeforeModelHookInput:
     max_iterations: int
     current_iteration: int
     messages: list[Message]
+    # RFC-0026: outparam — MiddlewareManager publishes the typed history
+    # event set by any middleware here so executor can apply it after the
+    # iteration. None when no middleware emitted a typed event.
+    #
+    # Generic ``HistoryEvent`` slot (discriminated union over event type)
+    # rather than a per-event-type field so adding new event types
+    # (``UndoEvent`` / ``AppendEvent`` / future) doesn't churn this schema.
+    history_event: HistoryEvent | None = None
 
 
 @dataclass
@@ -84,7 +94,10 @@ class AfterModelHookInput(BeforeModelHookInput):
     - parsed_response: The parsed structure containing tool/agent calls
     """
 
-    original_response: str
+    # Default "" so subclass field ordering remains valid after RFC-0026
+    # added a default-bearing field (history_event) to BeforeModelHookInput.
+    # All real call sites pass original_response as a kwarg, never positional.
+    original_response: str = ""
     parsed_response: ParsedResponse | None = None
     model_response: ModelResponse | None = None
 
@@ -103,6 +116,26 @@ class HookResult:
     llm_tool_output: Any | None = None
     tool_input: dict[str, Any] | None = None
     agent_response: str | None = None
+    # RFC-0026: opt-in typed history-event channel.
+    #
+    # When a middleware mutates state in a way that represents a *real
+    # history event* (compaction / ``/clear`` / future ``/compact`` /
+    # ``/undo``), it should set ``history_event`` to the typed event so
+    # the persisted action stream carries that event with full WHY
+    # metadata, not an opaque untyped REPLACE inferred from a fingerprint
+    # diff at flush time.
+    #
+    # Generic ``HistoryEvent`` discriminated union slot (today's variants:
+    # ``ReplaceEvent`` / ``AppendEvent`` / ``UndoEvent``; old SDK reading
+    # a future variant decodes to ``UnknownEvent`` → executor skips).
+    # Adding new event types means appending one variant to the union,
+    # not adding a new top-level field — schema stays stable.
+    #
+    # Backward-compatible: existing middleware that just returns
+    # ``messages`` (transient prompt mutation OR untyped replace) keeps
+    # working — the executor falls back to the existing fingerprint-diff
+    # path when this is None.
+    history_event: HistoryEvent | None = None
 
     def has_messages(self) -> bool:
         return self.messages is not None
@@ -145,6 +178,7 @@ class HookResult:
         llm_tool_output: Any | None = None,
         tool_input: dict[str, Any] | None = None,
         agent_response: str | None = None,
+        history_event: HistoryEvent | None = None,
     ) -> HookResultT:
         return cls(
             messages=messages,
@@ -154,6 +188,7 @@ class HookResult:
             llm_tool_output=llm_tool_output,
             tool_input=tool_input,
             agent_response=agent_response,
+            history_event=history_event,
         )
 
 
@@ -248,6 +283,11 @@ class ModelCallParams:
     retry_attempts: int = 5
     shutdown_event: threading.Event | None = None
     token_trace_session: TokenTraceSession | None = None
+    # RFC-0026: typed-event API surface for wrap_model_call middleware
+    # (e.g. emergency compaction). Replaces the deprecated
+    # ``agent_state.history`` direct backref. Read via
+    # ``params.framework_context.history.replace(messages, extra=variant)``.
+    framework_context: FrameworkContext | None = None
 
 
 @dataclass
@@ -631,6 +671,9 @@ class MiddlewareManager:
         return hook_input.agent_response, hook_input.messages
 
     def run_before_model(self, hook_input: BeforeModelHookInput) -> list[Message]:
+        # RFC-0026: clear the typed-event outparam at the start of each run so
+        # stale state from a prior iteration can't leak through.
+        hook_input.history_event = None
         current_messages = hook_input.messages
         for _, middleware in enumerate(self.middlewares):
             handler = getattr(middleware, "before_model", None)
@@ -645,6 +688,10 @@ class MiddlewareManager:
                     logger.info(f"🎣 Middleware {middleware.__class__.__name__} (before_model) modified messages")
                 else:
                     logger.info(f"🎣 Middleware {middleware.__class__.__name__} (before_model) made no changes")
+                # RFC-0026: last writer wins on typed history-event intent. In practice
+                # only one middleware in a chain (compaction) sets this today.
+                if hook_result.history_event is not None:
+                    hook_input.history_event = hook_result.history_event
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning(f"⚠️ Before-model middleware {middleware} failed: {exc}")
         return current_messages
@@ -653,6 +700,8 @@ class MiddlewareManager:
         self,
         hook_input: AfterModelHookInput,
     ) -> tuple[ParsedResponse | None, list[Message], bool]:
+        # RFC-0026: same clear-outparam pattern as run_before_model.
+        hook_input.history_event = None
         current_parsed = hook_input.parsed_response
         current_messages = hook_input.messages
         force_continue = False
@@ -673,6 +722,8 @@ class MiddlewareManager:
                     logger.info(f"🎣 Middleware {middleware.__class__.__name__} (after_model) modified messages")
                 if hook_result.force_continue:
                     force_continue = True
+                if hook_result.history_event is not None:
+                    hook_input.history_event = hook_result.history_event
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning(f"⚠️ After-model middleware {middleware} failed: {exc}")
         return current_parsed, current_messages, force_continue

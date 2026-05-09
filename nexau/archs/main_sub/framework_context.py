@@ -22,12 +22,86 @@ RFC-0006: FrameworkContext — 类型安全的框架上下文
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from nexau.archs.session.models.agent_run_action_model import ReplaceVariantBase
     from nexau.archs.tool.tool import Tool
     from nexau.archs.tool.tool_registry import ToolRegistry
+    from nexau.core.messages import Message
+
+    from .history_list import HistoryList
+
+
+logger = logging.getLogger(__name__)
+
+
+class HistoryAPI:
+    """Write-side typed-event API for agent history.
+
+    RFC-0026: replaces the RFC-0022 Phase 3 ``agent_state.history`` direct
+    backreference. ContextCompactionMiddleware (and any future writer of
+    typed REPLACE events — ``/clear`` / ``/compact <focus>``) emits through
+    this API instead of reaching into HistoryList directly.
+
+    RPC-friendly by design: every public method takes only serializable
+    arguments (Pydantic ``Message`` + ``ReplaceVariantBase`` subclass).
+    No HistoryList object handle ever crosses the API boundary, so when
+    running in remote-tool mode (lambda / RPC future), this becomes a
+    thin RPC stub with no in-process state to marshal.
+
+    Intentional minimal surface — only operations with concrete callers
+    today are exposed:
+      - :meth:`replace` — typed REPLACE (compaction, /clear, /compact)
+    Read access (``inspect prior messages``) and other event types
+    (``append`` / ``undo``) are deliberately NOT pre-exposed; they get
+    added when a real production caller appears.
+
+    Internal: holds an optional ``HistoryList`` handle. None when the
+    agent has no SessionManager (in-process tests) — all methods become
+    safe no-ops, matching the existing HistoryList persistence-disabled
+    semantics.
+    """
+
+    def __init__(
+        self,
+        *,
+        _history: HistoryList | None,
+    ) -> None:
+        self._history = _history
+
+    def replace(
+        self,
+        messages: list[Message],
+        *,
+        extra: ReplaceVariantBase,
+    ) -> None:
+        """Emit a typed REPLACE event into agent history.
+
+        Used for compaction (auto / manual / focused), ``/clear``, and any
+        future state-reset operation that carries semantic intent. The
+        ``extra`` discriminates the reason
+        (``CompactAutoVariant`` / ``UserClearVariant`` /
+        ``CompactFocusedVariant`` / ...) so reader-side replay can render
+        or aggregate by reason without inspecting message content.
+
+        Args:
+            messages: New full message list to install as the post-replace
+                state. The persisted action row carries ``messages`` as
+                ``replace_messages`` (RFC-0022 Phase 1 column) and the
+                in-memory list is realigned synchronously so subsequent
+                flushes don't double-write.
+            extra: Required typed variant. There is no untyped path through
+                this API — untyped REPLACE inferred from the
+                fingerprint-diff fallback inside ``HistoryList.flush()``
+                stays as the back-compat path for middleware that hasn't
+                migrated yet (RFC-0026 Stage 2 will close that gap).
+        """
+        if self._history is None:
+            return
+        self._history.replace_all(messages, replace_extra=extra)
 
 
 class ExecutionAPI:
@@ -135,6 +209,7 @@ class FrameworkContext:
         root_run_id: str,
         _tool_registry: ToolRegistry,
         _shutdown_event: threading.Event,
+        _history: HistoryList | None = None,
         session_id: str = "",
         tool_name: str = "",
         allow_rules: list[str] | None = None,
@@ -158,9 +233,14 @@ class FrameworkContext:
         self.execution = ExecutionAPI(
             _shutdown_event=_shutdown_event,
         )
+        # RFC-0026: typed-event write API for compaction / /clear / etc.
+        # Replaces the deprecated ``agent_state.history`` direct backref.
+        self.history = HistoryAPI(_history=_history)
+
         # RFC-0019: 保留内部引用以便 for_tool_call 复用
         self._tool_registry = _tool_registry
         self._shutdown_event = _shutdown_event
+        self._history = _history
 
     def for_tool_call(
         self,
@@ -173,7 +253,7 @@ class FrameworkContext:
 
         RFC-0019: 每次 tool call 前构造独立 FrameworkContext
 
-        共享 ToolsAPI / ExecutionAPI 实例，但 permission 字段独立，
+        共享 ToolsAPI / ExecutionAPI / HistoryAPI 实例，但 permission 字段独立，
         保证并行 tool call 之间不互相干扰。
         """
         return FrameworkContext(
@@ -183,6 +263,7 @@ class FrameworkContext:
             root_run_id=self.root_run_id,
             _tool_registry=self._tool_registry,
             _shutdown_event=self._shutdown_event,
+            _history=self._history,
             session_id=self.session_id,
             tool_name=tool_name,
             allow_rules=allow_rules,

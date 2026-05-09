@@ -80,7 +80,24 @@ class SQLDatabaseEngine(DatabaseEngine):
         return cls(engine)
 
     async def setup_models(self, model_classes: list[type[SQLModel]]) -> None:
-        """Create tables for all model classes."""
+        """Create tables for all model classes, then apply pending migrations.
+
+        RFC-0022 two-phase bootstrap:
+
+        1. ``SQLModel.metadata.create_all`` creates any missing tables
+           (CREATE TABLE IF NOT EXISTS — idempotent). For a fresh DB this
+           gives the full schema in one shot; for a legacy DB this is a
+           no-op.
+        2. ``nexau.db.upgrade_to_head`` applies pending alembic migrations.
+           For a fresh DB whose schema already matches the latest model the
+           call detects this via fingerprint and stamps the right baseline
+           without re-running ALTERs. For a pre-RFC-0022 DB the call adds
+           the new ``idempotency_key`` + ``extra`` columns.
+
+        Override with ``NEXAU_AUTO_MIGRATE=off`` to skip step 2 and instead
+        fail loud if the DB is not at head — useful for production deploys
+        that prefer explicit migrations.
+        """
         async with self._engine.begin() as conn:
             if "sqlite" in str(self._engine.url.drivername):
                 # Enable WAL mode for better concurrency
@@ -91,8 +108,28 @@ class SQLDatabaseEngine(DatabaseEngine):
                 await conn.execute(text("PRAGMA synchronous=NORMAL"))
 
             await conn.run_sync(SQLModel.metadata.create_all)
+
+        # Phase 2: alembic upgrade. Run after create_all so fresh DBs are
+        # already at head schema-wise; alembic stamps the baseline + applies
+        # any deltas for legacy DBs.
+        await self._run_alembic_upgrade()
+
         for model_class in model_classes:
             self._initialized_models.add(model_class)
+
+    async def _run_alembic_upgrade(self) -> None:
+        """Apply pending alembic migrations to the engine's database.
+
+        Runs in a thread because alembic's command API is sync-only.
+        """
+        import asyncio
+
+        from nexau.db import upgrade_to_head
+
+        # Render the current engine URL; alembic will translate async →
+        # sync inside upgrade_to_head.
+        url = str(self._engine.url.render_as_string(hide_password=False))
+        await asyncio.to_thread(upgrade_to_head, url)
 
     async def find_first(
         self,
