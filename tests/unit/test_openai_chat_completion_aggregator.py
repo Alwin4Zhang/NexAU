@@ -1478,6 +1478,111 @@ class TestReasoningContentStreaming:
         assert len(contents) == 1
         assert contents[0].delta == "Analyzed by decomposition then verified"
 
+    def test_bare_reasoning_field_emits_thinking_events(self):
+        """Step / step-3.5-flash uses ``delta.reasoning`` (no ``_content`` suffix).
+
+        Pre-fix the aggregator silently dropped these chunks: the production
+        crash on trace ``42bce5e2baaf6eaf1528346392aa6062`` was 21 bare-
+        ``reasoning`` chunks → zero events surfaced → empty choice → RuntimeError.
+        Locks in the bare-key recognition path for that vendor wire shape.
+        """
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-step")
+        agg.aggregate(self._make_chunk({"reasoning": "想一下，"}))
+        agg.aggregate(self._make_chunk({"reasoning": "1+1=2 是数学公理"}))
+
+        contents = self._events_of(mock_on_event, "ThinkingTextMessageContentEvent")
+        assert [c.delta for c in contents] == ["想一下，", "1+1=2 是数学公理"]
+
+    def test_bare_reasoning_persisted_into_built_message_reasoning_content(self):
+        """Build() must surface bare ``reasoning`` chunks under the canonical
+        ``reasoning_content`` slot — downstream (UI, persistence,
+        ModelResponse.from_openai_message) only reads that one field, no
+        per-vendor schema fork.
+        """
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-step")
+        agg.aggregate(self._make_chunk({"reasoning": "first part"}))
+        agg.aggregate(self._make_chunk({"content": "answer"}))
+        agg.aggregate(self._make_chunk({"reasoning": " then more"}, finish_reason="stop"))
+
+        completion = agg.build()
+        choice = completion.choices[0]
+        assert choice.message.reasoning_content == "first part then more"  # type: ignore[attr-defined]
+
+    def test_reasoning_only_truncation_substitutes_placeholder(self):
+        """Reasoning-only stream (finish_reason=length, zero content tokens)
+        must (a) NOT raise ``Choice 0 was never aggregated with any content``
+        and (b) substitute ``[empty]`` placeholder for ``content`` so the
+        built message is wire-safe for next-turn calls.
+
+        Production repro: trace ``42bce5e2baaf6eaf1528346392aa6062`` crashed
+        agent_creator because step-3.5-flash truncated mid-thinking. Without
+        the placeholder, ``content=None`` propagates into history and breaks
+        Anthropic / Gemini (HTTP 400 on empty content) on session resume or
+        vendor failover. The reasoning text remains attached separately
+        under ``reasoning_content`` for trace / UI thinking display, and is
+        dropped from the wire by serializer whitelists.
+        """
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-step")
+        agg.aggregate(self._make_chunk({"reasoning": "thinking about it"}))
+        agg.aggregate(self._make_chunk({}, finish_reason="length"))
+
+        completion = agg.build()  # must not raise
+        choice = completion.choices[0]
+        assert choice.finish_reason == "length"
+        assert choice.message.content == "[empty]"
+        assert choice.message.reasoning_content == "thinking about it"  # type: ignore[attr-defined]
+
+    def test_xml_tool_call_in_reasoning_aggregates_as_reasoning_only(self):
+        """Step-3.5-flash multi-turn pathology — model embeds tool calls as
+        XML inside ``reasoning`` instead of using OpenAI ``tool_calls``.
+
+        Production trace 42bce5e2baaf6eaf1528346392aa6062 (agent_creator):
+        once the conversation has 3+ prior assistant tool turns, step-3.5-flash
+        deterministically (5/5 trials at temperature=0.2) emits the next tool
+        call as ``<function=NAME><parameter=...>...</tool_call>`` text inside
+        ``delta.reasoning`` and reports finish_reason=stop with empty content
+        and no ``tool_calls``. Prompt-engineering workarounds (anti-XML
+        system prompt, tool_choice=required, tool_choice={specific_tool},
+        temperature=0) all fail — it's a model-side bug.
+
+        Per discussion (顾乡 + 王晓星): we do NOT parse the embedded XML on
+        nexau's side. We just need the aggregator to surface the captured
+        reasoning text (so the UI shows what the model was trying to do)
+        instead of crashing or silently swallowing it. Locks that contract.
+        """
+        mock_on_event = Mock()
+        agg = OpenAIChatCompletionAggregator(on_event=mock_on_event, run_id="run-step")
+        # First chunk: role + empty content (real wire shape from Step)
+        agg.aggregate(self._make_chunk({"role": "assistant", "content": ""}))
+        # Then reasoning chunks containing the embedded XML tool call
+        for piece in [
+            "我应该用 run_shell_command 工具。",
+            "<function=run_shell_command>",
+            "<parameter=command>find /tmp -type d</parameter>",
+            "<parameter=description>list dirs</parameter>",
+            "</function>",
+            "</tool_call>",
+        ]:
+            agg.aggregate(self._make_chunk({"reasoning": piece}))
+        # Stream ends with finish_reason=stop, no usable tool_calls
+        agg.aggregate(self._make_chunk({}, finish_reason="stop"))
+
+        completion = agg.build()  # must not raise — reasoning IS payload
+        choice = completion.choices[0]
+        assert choice.finish_reason == "stop"
+        # Content gets substituted with placeholder so wire payload stays valid.
+        assert choice.message.content == "[empty]"
+        # No standard tool_calls because the model never emitted them.
+        assert not choice.message.tool_calls
+        # Reasoning preserved verbatim (UI / trace can show it; downstream
+        # callers can decide whether to retry / switch model / surface to user).
+        rc = choice.message.reasoning_content  # type: ignore[attr-defined]
+        assert "<function=run_shell_command>" in rc
+        assert "</tool_call>" in rc
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

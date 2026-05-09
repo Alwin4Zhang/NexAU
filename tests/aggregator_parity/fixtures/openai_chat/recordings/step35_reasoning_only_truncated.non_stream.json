@@ -1,0 +1,28 @@
+{
+  "id": "ddec3299d5702e4406dd37fbcd620bee.9ec51f7c7ed6284b22eee7f1bf383327",
+  "object": "chat.completion",
+  "created": 1778327391,
+  "model": "step-3.5-flash",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "reasoning": "用户现在要详细分析1+1=2的哲学意义和数学根基，首先我得先把这个东西拆清楚，不能混为一谈，首先得区分开日常直觉的1+1=2，还有数学里严格定义的1+1=2，还有哲学层面的问题，比如它是先验的还是经验的，还有蒯因那些东西？还有数学根基的话，得从"
+      },
+      "finish_reason": "length"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 28,
+    "completion_tokens": 80,
+    "total_tokens": 108,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  }
+}

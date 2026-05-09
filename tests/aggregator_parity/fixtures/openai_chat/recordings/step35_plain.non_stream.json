@@ -1,0 +1,28 @@
+{
+  "id": "7157a65419bcb92b36acdbe5542e5a9b.137522bea15c63be5bb88d58604ca9fa",
+  "object": "chat.completion",
+  "created": 1778327368,
+  "model": "step-3.5-flash",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "在通用十进制数学规则下，1+1等于2。",
+        "reasoning": "用户现在需要用一句话回答1+1等于多少，首先最基础的是2？不过有没有更准确的？哦对，正常十进制下1+1=2，不过要不要说清楚？哦用户要一句话，那就说“在常规十进制数学运算中，1+1的结果是2。”？等下，会不会太啰嗦？哦或者直接点？不过要准确，对，就这个？等下再想想，有没有更合适的？哦对，也可以说“正常情况下1+1=2”，不过还是严谨点好？哦对，就“在通用十进制数学规则下，1+1等于2。”嗯，就这个？对，一句话，也准确。"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 20,
+    "completion_tokens": 156,
+    "total_tokens": 176,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  }
+}

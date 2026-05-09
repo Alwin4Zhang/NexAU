@@ -1,0 +1,26 @@
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":228,"completion_tokens":0,"total_tokens":228,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"用户"}}],"usage":{"prompt_tokens":228,"completion_tokens":1,"total_tokens":229,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"要求查询北京今天的"}}],"usage":{"prompt_tokens":228,"completion_tokens":5,"total_tokens":233,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"天气。我需要使用"}}],"usage":{"prompt_tokens":228,"completion_tokens":9,"total_tokens":237,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"get_weather函数"}}],"usage":{"prompt_tokens":228,"completion_tokens":13,"total_tokens":241,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"，参数"}}],"usage":{"prompt_tokens":228,"completion_tokens":15,"total_tokens":243,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"为"}}],"usage":{"prompt_tokens":228,"completion_tokens":16,"total_tokens":244,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"city"}}],"usage":{"prompt_tokens":228,"completion_tokens":17,"total_tokens":245,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"=\"北京\""}}],"usage":{"prompt_tokens":228,"completion_tokens":20,"total_tokens":248,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"。"}}],"usage":{"prompt_tokens":228,"completion_tokens":24,"total_tokens":252,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"call_9ded757ece1e4cdbb902fb91","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"北京\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":228,"completion_tokens":46,"total_tokens":274,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: {"id":"f6761efb92498ac0b831f0ade391bc9a.f4dfad3759c427498d6f97f0a4a30751","object":"chat.completion.chunk","created":1778327388,"model":"step-3.5-flash","choices":[],"usage":{"prompt_tokens":228,"completion_tokens":46,"total_tokens":274,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"agent":""}
+
+data: [DONE]
+

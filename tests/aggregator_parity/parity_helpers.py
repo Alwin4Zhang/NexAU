@@ -170,6 +170,13 @@ def openai_chat_set_b_dict_to_message(payload: dict[str, Any]) -> Message:
     # ThinkingTextMessage{Start,Content,End} events (Set A's
     # _extract_reasoning_delta also pulls from both fields).
     reasoning_parts: list[str] = []
+    # Bare ``reasoning`` (Step / step-3.5-flash) — third wire shape alongside
+    # DeepSeek's reasoning_content and OpenRouter's reasoning_details. Mirror
+    # Set A's ``_extract_reasoning_delta`` key list so vendor-truth and Set A
+    # reconstruct the same ReasoningBlock.
+    bare_reasoning = payload.get("reasoning")
+    if isinstance(bare_reasoning, str) and bare_reasoning:
+        reasoning_parts.append(bare_reasoning)
     reasoning_content = payload.get("reasoning_content")
     if isinstance(reasoning_content, str) and reasoning_content:
         reasoning_parts.append(reasoning_content)

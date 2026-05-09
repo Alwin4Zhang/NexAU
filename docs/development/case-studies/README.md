@@ -47,3 +47,4 @@ first and reuse the methodology rather than re-derive it.
 
 - [2026-05-02-aggregator-parity-harness.md](2026-05-02-aggregator-parity-harness.md) — Two parallel LLM stream aggregators (Set A SSE / Set B persist) silently drift; built parity harness, found 3 production bugs + 2 infra bugs that all match industry-wide pathologies (vLLM, koog, Spring AI, LiteLLM).
 - [2026-05-04-live-test-economics.md](2026-05-04-live-test-economics.md) — Live LLM test 决策树 + cache 命中不变量断言写法 + per-PR/nightly 分层 + 单一名单原则 + Lark 通知机制；从 PR #519 全连 81 个 live test 暴露的"全连每 PR 跑"反模式中总结。
+- [2026-05-09-step-3.5-flash-pathologies.md](2026-05-09-step-3.5-flash-pathologies.md) — step-3.5-flash 三层 bug 拆解：裸 reasoning 字段 + build() 硬抛 reasoning-only + 模型层长 context 退化为 reasoning XML tool call（100% 必现，bisect 出 8-msg 阈值，4 种 prompt workaround 全失效）。

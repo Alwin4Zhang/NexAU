@@ -61,4 +61,24 @@ OPENAI_CHAT_FIXTURES: list[tuple[str, FixtureFn]] = [
     ("rec_vt_plain", _make_recording_fixture("vt_plain")),
     ("rec_vt_tool", _make_recording_fixture("vt_tool")),
     ("rec_vt_or_reasoning", _make_recording_fixture("vt_or_reasoning")),
+    # Step / step-3.5-flash via api.stepfun.com — uses the BARE ``reasoning``
+    # extension key (no ``_content`` suffix), distinct from DeepSeek's
+    # ``reasoning_content`` and OpenRouter's structured ``reasoning_details``.
+    # See case study 2026-05-09-step-3.5-flash-pathologies.md for the full
+    # investigation (bisect / workaround failure matrix / decisions).
+    #
+    # Minimal regression set — each fixture covers one distinct code path:
+    #   plain                       → bare-reasoning + content path (happy)
+    #   tool_call                   → standard tool_calls path     (happy)
+    #   reasoning_only_truncated    → build() reasoning-only branch (bug b)
+    #   xml_tool_in_reasoning_threshold → executor _has_empty_payload  (bug c)
+    #   workaround_anti_xml_*       → proves bug c is unfixable from our side
+    ("rec_step35_plain", _make_recording_fixture("step35_plain")),
+    ("rec_step35_tool_call", _make_recording_fixture("step35_tool_call")),
+    ("rec_step35_reasoning_only_truncated", _make_recording_fixture("step35_reasoning_only_truncated")),
+    ("rec_step35_xml_tool_in_reasoning_threshold", _make_recording_fixture("step35_xml_tool_in_reasoning_threshold")),
+    (
+        "rec_step35_workaround_anti_xml_system_prompt_still_fails",
+        _make_recording_fixture("step35_workaround_anti_xml_system_prompt_still_fails"),
+    ),
 ]

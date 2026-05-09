@@ -89,6 +89,17 @@ def _noop_event_handler(_: Event) -> None:
 _logger = logging.getLogger(__name__)
 
 
+_EMPTY_CONTENT_PLACEHOLDER = "[empty]"
+"""Substituted into ``content`` by ``_ChoiceAggregator.build()`` when the
+stream produced reasoning but no content/refusal/tool_calls.
+
+Kept short (~3 BPE tokens) so prompt-cache miss on next turn is minimal.
+Diagnostic context (the actual reasoning text) lives on the built
+``ChatCompletionMessage.reasoning_content`` field, not in the wire content.
+See ``docs/development/case-studies/2026-05-09-step-3.5-flash-pathologies.md``.
+"""
+
+
 class OpenAIChatCompletionAggregator(Aggregator[ChatCompletionChunk, ChatCompletion]):
     """
     Aggregates a stream of chat completion chunks into a complete response.
@@ -376,11 +387,40 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
             The complete ChatCompletionChoice object
 
         Raises:
-            RuntimeError: If aggregate() was never called
+            RuntimeError: If the stream produced absolutely nothing —
+            no content, no refusal, no tool calls, no reasoning. That
+            indicates the connection died before any payload arrived
+            and the caller should fail loudly.
+
+        Vendor-pathology guard: when the stream produced reasoning but no
+        ``content``/``refusal``/``tool_calls`` (Step / DeepSeek / Qwen
+        finishing with ``finish_reason in {stop, length}`` mid-thinking),
+        substitute :data:`_EMPTY_CONTENT_PLACEHOLDER` for ``content`` so
+        downstream consumers see a normal-shaped message. The full
+        reasoning text remains attached under ``reasoning_content`` for
+        Langfuse trace + UI thinking display. Without this substitution,
+        Anthropic / Gemini reject empty-content assistant messages with
+        HTTP 400 on the next turn (session resume / vendor failover),
+        and the user sees an empty agent response with no signal. See
+        ``docs/development/case-studies/2026-05-09-step-3.5-flash-pathologies.md``.
         """
-        # Check if any content was aggregated (content, refusal, or tool calls)
-        if self._value.message.content is None and self._value.message.refusal is None and not self._tool_call_aggregators:
+        has_any_signal = (
+            self._value.message.content is not None
+            or self._value.message.refusal is not None
+            or self._tool_call_aggregators
+            or self._reasoning_content_parts
+            or self._reasoning_details
+        )
+        if not has_any_signal:
             raise RuntimeError(f"Choice {self._index} was never aggregated with any content")
+
+        # Empty-payload substitution: reasoning was the only useful artifact.
+        # Replace empty/None content with the canonical placeholder so the
+        # built ChatCompletion is downstream-safe for serialization +
+        # next-turn LLM calls. (Reasoning_content is attached separately
+        # below — kept for trace/audit, dropped by serializer whitelists.)
+        if not self._value.message.content and self._value.message.refusal is None and not self._tool_call_aggregators:
+            self._value.message.content = _EMPTY_CONTENT_PLACEHOLDER
 
         # Build final tool calls
         built_tool_calls: list[ChatCompletionMessageToolCallUnion] = []
@@ -436,7 +476,12 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
         if not extra:
             return ""
         parts: list[str] = []
-        for key in ("reasoning_content", "reasoning_details"):
+        # ``reasoning`` (bare flat key, no ``_content`` suffix) — Step / a few
+        # other OpenAI-compatible providers stream chain-of-thought under this
+        # key. Distinct from DeepSeek's ``reasoning_content`` and OpenRouter's
+        # structured ``reasoning_details``; all three coexist in the wild and
+        # we route every one through the same display-text extraction.
+        for key in ("reasoning", "reasoning_content", "reasoning_details"):
             raw: object = cast(object, extra.get(key))
             if isinstance(raw, str):
                 parts.append(raw)
@@ -455,6 +500,13 @@ class _ChoiceAggregator(Aggregator[ChatCompletionChunkChoice, ChatCompletionChoi
         """Emit Thinking* events for reasoning_content deltas."""
         # Retain raw reasoning fields for build() (RFC-0023 §阶段 ③).
         extra = delta.model_extra or {}
+        # Bare ``reasoning`` (Step) — store under the same canonical
+        # ``reasoning_content`` slot on the built message. Downstream
+        # consumers (UI, persistence, ModelResponse) only know about
+        # ``reasoning_content``; we don't fork the schema per vendor.
+        bare_reasoning = extra.get("reasoning")
+        if isinstance(bare_reasoning, str) and bare_reasoning:
+            self._reasoning_content_parts.append(bare_reasoning)
         rc_raw = extra.get("reasoning_content")
         if isinstance(rc_raw, str) and rc_raw:
             self._reasoning_content_parts.append(rc_raw)

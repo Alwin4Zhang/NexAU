@@ -323,12 +323,18 @@ class ModelResponse:
                     )
 
         # Extract reasoning_content if available (e.g. DeepSeek / Qwen / vLLM style:
-        # a single aggregated string of chain-of-thought).
+        # a single aggregated string of chain-of-thought). Falls back to the
+        # bare ``reasoning`` key (Step / others), normalizing both wire shapes
+        # to the same canonical slot.
         reasoning_content = None
         if hasattr(message_obj, "reasoning_content"):
             reasoning_content = getattr(message_obj, "reasoning_content")
         elif message_dict is not None and "reasoning_content" in message_dict:
             reasoning_content = message_dict["reasoning_content"]
+        elif hasattr(message_obj, "reasoning"):
+            reasoning_content = getattr(message_obj, "reasoning")
+        elif message_dict is not None and "reasoning" in message_dict:
+            reasoning_content = message_dict["reasoning"]
 
         # Extract reasoning_details verbatim (OpenRouter style: a list of structured blocks —
         # reasoning.text / reasoning.summary / reasoning.encrypted — that must be echoed back
