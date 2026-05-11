@@ -192,6 +192,55 @@ class TestShortOutput:
         assert not result.has_modifications()
         mock_sandbox.write_file.assert_not_called()
 
+    def test_image_tool_output_is_not_truncated(self, agent_state: AgentState, mock_sandbox):
+        """Base64 image blocks must stay intact for multimodal message coercion."""
+        output = {
+            "type": "image",
+            "image_url": f"data:image/png;base64,{'A' * 50_000}",
+            "detail": "auto",
+        }
+        mw = _make_middleware(max_output_chars=1000)
+        hook_input = _make_hook_input(agent_state, output, sandbox=mock_sandbox, tool_name="read_file")
+
+        result = mw.after_tool(hook_input)
+
+        assert not result.has_modifications()
+        mock_sandbox.write_file.assert_not_called()
+
+    def test_wrapped_image_content_tool_output_is_not_truncated(self, agent_state: AgentState, mock_sandbox):
+        """Common {content: image} wrappers should also bypass text truncation."""
+        image_block = {
+            "type": "image",
+            "image_url": f"data:image/png;base64,{'B' * 50_000}",
+            "detail": "auto",
+        }
+        output = {"content": image_block, "returnDisplay": "Read image file: diagram.svg"}
+        mw = _make_middleware(max_output_chars=1000)
+        hook_input = _make_hook_input(agent_state, output, sandbox=mock_sandbox, tool_name="read_file")
+
+        result = mw.after_tool(hook_input)
+
+        assert not result.has_modifications()
+        mock_sandbox.write_file.assert_not_called()
+
+    def test_multimodal_list_tool_output_is_not_truncated(self, agent_state: AgentState, mock_sandbox):
+        """Lists containing image blocks must stay structured and unmodified."""
+        output = [
+            {"type": "text", "text": "rendered SVG"},
+            {
+                "type": "image",
+                "image_url": f"data:image/png;base64,{'C' * 50_000}",
+                "detail": "auto",
+            },
+        ]
+        mw = _make_middleware(max_output_chars=1000)
+        hook_input = _make_hook_input(agent_state, output, sandbox=mock_sandbox, tool_name="read_visual_file")
+
+        result = mw.after_tool(hook_input)
+
+        assert not result.has_modifications()
+        mock_sandbox.write_file.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Long output – truncation

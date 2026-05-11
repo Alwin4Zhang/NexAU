@@ -6,6 +6,8 @@ read_visual_file tool - Reads image and video files for multimodal LLMs.
 Handles images (PNG, JPG, GIF, WEBP, SVG, BMP) and video files
 (MP4, AVI, MOV, MKV, WEBM, FLV, WMV, M4V).
 Video files are processed by extracting key frames via ffmpeg in the sandbox.
+SVG files are converted to PNG via Inkscape because multimodal LLMs cannot
+reliably consume raw SVG images.
 
 For text files, use the read_file tool instead.
 """
@@ -19,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from nexau.archs.main_sub.agent_state import AgentState
-from nexau.archs.sandbox import BaseSandbox, SandboxStatus
+from nexau.archs.sandbox import BaseSandbox, CommandResult, SandboxStatus
 from nexau.archs.tool.builtin._sandbox_utils import get_sandbox, resolve_path
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,14 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m
 VIDEO_FRAME_INTERVAL_SEC = 5  # Extract one frame every 5 seconds
 VIDEO_MAX_FRAMES = 10  # Return at most 10 frames
 
+SVG_CONVERSION_HINT = (
+    "SVG files cannot be read directly. Install Inkscape in the sandbox/host so read_visual_file can convert SVG to PNG, then retry."
+)
+
+
+class SvgConversionUnavailableError(RuntimeError):
+    """Raised when SVG rasterization cannot run because Inkscape is unavailable."""
+
 
 def _detect_file_type(file_path: str) -> str:
     """Detect visual file type based on extension."""
@@ -54,6 +64,65 @@ def _detect_file_type(file_path: str) -> str:
     elif ext in VIDEO_EXTENSIONS:
         return "video"
     return "unknown"
+
+
+def _command_output_text(result: CommandResult) -> str:
+    """Combine command output streams for diagnostic matching."""
+    parts: list[str] = []
+    if result.stderr:
+        parts.append(result.stderr)
+    if result.stdout:
+        parts.append(result.stdout)
+    if result.error:
+        parts.append(result.error)
+    return "\n".join(parts)
+
+
+def _is_missing_inkscape(result: CommandResult) -> bool:
+    """Return True if a failed command result indicates Inkscape is unavailable."""
+    output = _command_output_text(result).lower()
+    if result.exit_code == 127:
+        return True
+    if "inkscape" not in output:
+        return False
+    missing_hints = (
+        "command not found",
+        "not found",
+        "not recognized as an internal or external command",
+        "is not recognized",
+        "no such file or directory",
+    )
+    return any(hint in output for hint in missing_hints)
+
+
+def _convert_svg_to_png_in_sandbox(
+    file_path: str,
+    sandbox: BaseSandbox,
+) -> bytes:
+    """Convert an SVG file to PNG bytes using Inkscape in the sandbox."""
+    tmp_out = sandbox.join_path(sandbox.get_temp_dir(), f"nexau_svg_{uuid.uuid4().hex[:12]}.png")
+    try:
+        cmd = (
+            f"inkscape {shlex.quote(sandbox.to_shell_path(file_path))} "
+            f"--export-type=png "
+            f"--export-filename={shlex.quote(sandbox.to_shell_path(tmp_out))} 2>&1"
+        )
+        result = sandbox.execute_shell(cmd, timeout=30_000)
+        if result.status != SandboxStatus.SUCCESS or result.exit_code != 0:
+            if _is_missing_inkscape(result):
+                raise SvgConversionUnavailableError(SVG_CONVERSION_HINT)
+            diagnostics = _command_output_text(result)
+            raise RuntimeError(f"Inkscape SVG conversion failed (exit {result.exit_code}): {diagnostics[:500]}")
+
+        res = sandbox.read_file(tmp_out, binary=True)
+        if res.status != SandboxStatus.SUCCESS or not res.content:
+            raise RuntimeError(res.error or "Failed to read converted SVG PNG")
+
+        if isinstance(res.content, (bytes, bytearray)):
+            return bytes(res.content)
+        return res.content.encode("utf-8", errors="replace")
+    finally:
+        sandbox.delete_file(tmp_out)
 
 
 def _read_video_frames(
@@ -218,22 +287,26 @@ def _read_image_file(
     so coerce_tool_result_content can convert to ImageBlock.
     """
     ext = Path(file_path).suffix.lower()
-
-    res = sandbox.read_file(file_path, binary=True)
-    if res.status != SandboxStatus.SUCCESS:
-        raise RuntimeError(res.error or "Failed to read image file")
-
     content: bytes
-    if isinstance(res.content, (bytes, bytearray)):
-        content = bytes(res.content)
-    elif isinstance(res.content, str):
-        content = res.content.encode("utf-8", errors="replace")
-    else:
-        content = b""
+    mime_type: str
 
-    mime_type, _ = mimetypes.guess_type(file_path)
-    if not mime_type:
-        mime_type = f"image/{ext[1:]}"
+    if ext == ".svg":
+        content = _convert_svg_to_png_in_sandbox(file_path, sandbox)
+        mime_type = "image/png"
+    else:
+        res = sandbox.read_file(file_path, binary=True)
+        if res.status != SandboxStatus.SUCCESS:
+            raise RuntimeError(res.error or "Failed to read image file")
+
+        if isinstance(res.content, (bytes, bytearray)):
+            content = bytes(res.content)
+        elif isinstance(res.content, str):
+            content = res.content.encode("utf-8", errors="replace")
+        else:
+            content = b""
+
+        guessed_mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type = guessed_mime_type or f"image/{ext[1:]}"
 
     b64_str = base64.b64encode(content).decode("utf-8")
 
@@ -267,8 +340,10 @@ def read_visual_file(
     Reads image and video files, returning visual content for multimodal LLMs.
 
     Supports images (PNG, JPG, GIF, WEBP, SVG, BMP) and video files
-    (MP4, AVI, MOV, MKV, WEBM, FLV, WMV, M4V). Video files are processed
-    by extracting key frames via ffmpeg in the sandbox.
+    (MP4, AVI, MOV, MKV, WEBM, FLV, WMV, M4V). SVG files are rasterized to
+    PNG via Inkscape; when Inkscape is unavailable, the tool returns an
+    SVG_REQUIRES_INKSCAPE error with an actionable hint. Video files are
+    processed by extracting key frames via ffmpeg in the sandbox.
 
     For text files, use the read_file tool instead.
 
@@ -433,6 +508,16 @@ def read_visual_file(
             "error": {
                 "message": error_msg,
                 "type": "PERMISSION_DENIED",
+            },
+        }
+    except SvgConversionUnavailableError as e:
+        error_msg = str(e)
+        return {
+            "content": error_msg,
+            "returnDisplay": "SVG cannot be read directly; install Inkscape to convert it to PNG.",
+            "error": {
+                "message": error_msg,
+                "type": "SVG_REQUIRES_INKSCAPE",
             },
         }
     except Exception as e:

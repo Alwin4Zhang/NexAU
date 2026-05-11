@@ -259,10 +259,11 @@ def read_file(
                 },
             }
 
-        # Delegate image/video files to read_visual_file only when explicitly enabled
+        # Delegate SVG files to read_visual_file because raw SVG cannot be read by
+        # multimodal LLMs; other images/videos require explicit visual support.
         if _is_visual_file(resolved_path):
             ext = Path(resolved_path).suffix.lower()
-            if enable_visual is True:
+            if enable_visual is True or ext == ".svg":
                 from .read_visual_file import read_visual_file as _read_visual_file
 
                 return _read_visual_file(

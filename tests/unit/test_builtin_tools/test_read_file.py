@@ -14,21 +14,23 @@
 
 """Unit tests for read_file and read_visual_file builtin tools."""
 
+import base64
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from nexau.archs.sandbox import SandboxStatus
-from nexau.archs.tool.builtin.file_tools import read_file, read_visual_file
+from nexau.archs.sandbox import CommandResult, FileOperationResult, SandboxStatus
 from nexau.archs.tool.builtin.file_tools.read_file import (
     MAX_TOTAL_OUTPUT_CHARS,
     _head_truncate_lines,
     _read_text_lossy,
+    read_file,
 )
 from nexau.archs.tool.builtin.file_tools.read_visual_file import (
     _read_video_frames,
     _resize_image_in_sandbox,
+    read_visual_file,
 )
 
 
@@ -244,6 +246,69 @@ class TestReadFileRejectsVisualFiles:
         assert "error" in result
         assert result["error"]["type"] == "DO_NOT_SUPPORT_VISUAL"
         assert "Not supported" in result["content"]
+
+    def test_svg_file_converts_to_png(self):
+        """SVG files read through read_file should be converted to PNG via Inkscape."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+
+        info = Mock()
+        info.is_directory = False
+        info.size = 100
+        sandbox.get_file_info.return_value = info
+        sandbox.get_temp_dir.return_value = "/tmp"
+        sandbox.join_path.side_effect = lambda base, child: f"{base.rstrip('/')}/{child}"
+        sandbox.to_shell_path.side_effect = lambda path: str(path)
+        sandbox.execute_shell.return_value = CommandResult(
+            status=SandboxStatus.SUCCESS,
+            stdout="",
+            stderr="",
+            exit_code=0,
+        )
+        png_bytes = b"converted-svg-png"
+        sandbox.read_file.return_value = FileOperationResult(
+            status=SandboxStatus.SUCCESS,
+            file_path="/tmp/icon.png",
+            content=png_bytes,
+            size=len(png_bytes),
+        )
+
+        agent_state = _make_agent_state(sandbox)
+        result = read_file(file_path="icon.svg", agent_state=agent_state)
+
+        assert "error" not in result or result.get("error") is None
+        assert result["returnDisplay"] == "Read image file: icon.svg"
+        block = result["content"]
+        assert isinstance(block, dict)
+        assert block["type"] == "image"
+        assert block["image_url"] == f"data:image/png;base64,{base64.b64encode(png_bytes).decode('utf-8')}"
+
+    def test_svg_file_missing_inkscape_returns_hint(self):
+        """read_file should surface the SVG-specific Inkscape requirement."""
+        sandbox = Mock()
+        sandbox.work_dir = Path("/tmp/work")
+        sandbox.file_exists.return_value = True
+
+        info = Mock()
+        info.is_directory = False
+        info.size = 100
+        sandbox.get_file_info.return_value = info
+        sandbox.get_temp_dir.return_value = "/tmp"
+        sandbox.join_path.side_effect = lambda base, child: f"{base.rstrip('/')}/{child}"
+        sandbox.to_shell_path.side_effect = lambda path: str(path)
+        sandbox.execute_shell.return_value = CommandResult(
+            status=SandboxStatus.ERROR,
+            stderr="inkscape: command not found",
+            exit_code=127,
+        )
+
+        agent_state = _make_agent_state(sandbox)
+        result = read_file(file_path="icon.svg", agent_state=agent_state)
+
+        assert result["error"]["type"] == "SVG_REQUIRES_INKSCAPE"
+        assert "SVG files cannot be read directly" in result["content"]
+        assert "Install Inkscape" in result["content"]
 
     def test_pdf_file_returns_binary_error(self):
         """PDF files should not be read as text or returned as supported content."""

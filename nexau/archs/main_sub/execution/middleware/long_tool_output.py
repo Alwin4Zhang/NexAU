@@ -114,6 +114,37 @@ def _sandbox_status_value(status: object) -> str:
     return str(status)
 
 
+def _is_image_like_tool_output(value: object) -> bool:
+    """Return whether a tool output should stay on the multimodal path.
+
+    This intentionally avoids importing ``nexau.archs.tool.formatters`` or
+    ``nexau.core.messages`` so the middleware binding remains lightweight.
+    """
+
+    if isinstance(value, list):
+        value_list = cast(list[object], value)
+        return any(_is_image_like_tool_output(item) for item in value_list)
+
+    if isinstance(value, dict):
+        value_dict = cast(dict[str, object], value)
+        value_type = value_dict.get("type")
+        if isinstance(value_type, str) and value_type in {"input_image", "image"}:
+            image_url = value_dict.get("image_url")
+            url = value_dict.get("url")
+            base64_data = value_dict.get("base64")
+            return isinstance(image_url, str) or isinstance(url, str) or isinstance(base64_data, str)
+
+        nested_content = value_dict.get("content")
+        if isinstance(nested_content, (dict, list)) and _is_image_like_tool_output(cast(object, nested_content)):
+            return True
+
+        nested_result = value_dict.get("result")
+        if isinstance(nested_result, (dict, list)) and _is_image_like_tool_output(cast(object, nested_result)):
+            return True
+
+    return False
+
+
 class LongToolOutputMiddleware(Middleware):
     """Truncates oversized tool outputs and persists the full version to disk.
 
@@ -195,6 +226,12 @@ class LongToolOutputMiddleware(Middleware):
 
         output = hook_input.llm_tool_output if hook_input.llm_tool_output is not None else hook_input.tool_output
         sandbox = hook_input.sandbox
+
+        # Multimodal/image tool outputs contain large base64 payloads by design.
+        # Treating them as JSON text corrupts the image block, so let the
+        # downstream message coercion path handle them intact.
+        if _is_image_like_tool_output(output):
+            return HookResult.no_changes()
 
         # For dict outputs with a known text field, measure that field directly
         # so line-based truncation operates on the actual text content rather
