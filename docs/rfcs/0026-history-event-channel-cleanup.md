@@ -217,6 +217,14 @@ if params.framework_context is not None:
 
 通过 `ModelCallParams.framework_context`（RFC-0026 新增字段）拿到 ctx，调用同一个公开 API。**不**读 `agent_state.history`——AgentState 上的 history 字段已删除。
 
+与 hook-dispatched `ReplaceEvent` 不同，emergency direct path 没有
+`HookResult` 返回通道。因此 `HistoryAPI.replace(...)` 同时记录一次
+direct-replace outbox；`Executor` 在 `call_llm` / `call_llm_async` 返回后消费该
+outbox，把局部 working `messages` 对齐到 `compacted_messages`，再追加 assistant
+与 tool result。这个对齐是正确性要求：如果只写 `HistoryList` 而不更新
+Executor 局部变量，run 末尾的 `_sync_history(...)` 会用旧 messages 反向覆盖
+刚完成的 typed REPLACE，造成下一轮继续以未压缩 history 调用模型。
+
 #### 6. AgentState —— 删除 history 字段
 
 AgentState 在 `agent_context.py` / `framework_context.py` 演进路线上明确处于**逐步废弃**状态（替代方案是 `FrameworkContext`）。本 RFC：
@@ -389,7 +397,10 @@ def before_model(self, hook_input):
 ### 缺点
 
 - **仍保留 fingerprint-diff 兜底机制**：HistoryList 的 `flush()` 仍用旧的 baseline diff 兜底任何"未声明 replace_extra 但实际改了 messages"的 middleware（如 `runtime_environment` / `round_and_token_reminder`）。这是为了 backward compatible 不能马上删，等 Stage 2 全部 middleware 迁移后才能删。在那之前，env 注入仍会被错误持久化为 untyped REPLACE。
-- **Emergency 路径仍读 `agent_state.history`**：虽然走的是公开 canonical 方法，但毕竟还是反向引用。AgentState 完全废弃后这条调用要换路径（候选：`FrameworkContext.history_handle` 或 `ModelCallParams.history` 之类）。
+- **Emergency 路径的 direct replace 需要局部 history 对齐**：`ctx.history.replace(...)`
+  既要写 durable history，也要让 Executor 消费 direct-replace outbox 更新
+  working messages。否则 end-of-run sync 会把旧 messages 写回，抵消 typed
+  REPLACE。
 - **`emit_typed_replace` / `adopt_replaced_state` 残留**：作为 deprecated wrapper 还在 public API surface，等下一个 minor 版本可以加 `@deprecated` decorator + warning，再下一个删。
 
 ## 实现计划
@@ -408,6 +419,8 @@ def before_model(self, hook_input):
 - [x] `ModelCallParams.framework_context` 字段（emergency 路径用）
 - [x] `LLMCaller.call_llm` / `call_llm_async` 接 `framework_context` 参数 → 写入 ModelCallParams
 - [x] Executor 在 4 处 middleware 边界通过 `_emit_pending_history_event(framework_context, event)` dispatch by event type
+- [x] Executor 在 `wrap_model_call` emergency direct replace 后消费
+  `HistoryAPI` outbox，将 local working messages 对齐到 compacted history
 - [x] FrameworkContext 构造 2 处加 `_history=` 参数
 - [x] `HistoryList.replace_all` 增加 `replace_extra=` kwarg + `_schedule_typed_replace` 私有 helper（内部实现，没暴露公开）
 - [x] `emit_typed_replace` / `adopt_replaced_state` 退化为 wrapper（保留 back-compat）

@@ -186,3 +186,75 @@ def test_wrap_emergency_compaction_triggers_with_large_tool_outputs(monkeypatch)
     assert len(wrap_started) >= 1
     assert len(wrap_finished) >= 1
     assert any(event.success for event in wrap_finished)
+
+
+def test_wrap_emergency_compaction_becomes_returned_agent_history(monkeypatch):
+    """Emergency compacted messages should become the durable working history after retry."""
+    model = _OverflowingChatModel(provider_limit_chars=6500, tool_payload_chars=2600)
+    mock_client = Mock()
+    mock_client.chat.completions.create.side_effect = model.create
+
+    monkeypatch.setattr(Agent, "_initialize_openai_client", lambda _self: mock_client)
+
+    events: list[Any] = []
+    events_middleware = AgentEventsMiddleware(
+        session_id="wrap_compaction_history_session",
+        on_event=events.append,
+    )
+    compaction_middleware = ContextCompactionMiddleware(
+        compaction_strategy="tool_result_compaction",
+        auto_compact=True,
+        emergency_compact_enabled=True,
+        max_context_tokens=4000,
+        threshold=0.75,
+        keep_iterations=3,
+    )
+
+    tool = Tool(
+        name="big_blob_writer",
+        description="Write a large payload into tool result.",
+        input_schema={
+            "type": "object",
+            "properties": {"payload_size": {"type": "integer"}},
+            "required": ["payload_size"],
+        },
+        implementation=lambda payload_size: {"blob": "X" * int(payload_size)},
+    )
+
+    config = AgentConfig(
+        name="wrap_compaction_history_agent",
+        system_prompt="Use tool 'big_blob_writer' on every user request, then finish.",
+        llm_config=LLMConfig(
+            model="gpt-4o-mini",
+            base_url="https://api.openai.com/v1",
+            api_key="test-key",
+            api_type="openai_chat_completion",
+            stream=False,
+            max_tokens=512,
+        ),
+        tools=[tool],
+        middlewares=[compaction_middleware, events_middleware],
+        max_iterations=8,
+        retry_attempts=1,
+        max_context_tokens=4000,
+        tool_call_mode="openai",
+    )
+
+    session_manager = SessionManager(engine=InMemoryDatabaseEngine())
+    agent = Agent(
+        config=config,
+        session_manager=session_manager,
+        user_id="integration_user",
+        session_id="integration_history_session",
+    )
+
+    for i in range(4):
+        response = agent.run(message=f"round={i} " + ("U" * 1200))
+        assert isinstance(response, str)
+
+    wrap_finished = [
+        e for e in events if isinstance(e, CompactionFinishedEvent) and e.phase == "wrap_model_call" and e.mode == "emergency" and e.success
+    ]
+    assert model.overflow_count >= 1
+    assert len(wrap_finished) == 1
+    assert any(msg.metadata.get("is_compacted") is True and msg.metadata.get("compaction_level") == "emergency" for msg in agent.history)

@@ -33,6 +33,9 @@ from nexau.archs.main_sub.execution.middleware.context_compaction import (
 from nexau.archs.main_sub.execution.middleware.context_compaction.config import CompactionConfig
 from nexau.archs.main_sub.execution.model_response import ModelResponse
 from nexau.archs.main_sub.execution.parse_structures import ParsedResponse
+from nexau.archs.main_sub.framework_context import FrameworkContext
+from nexau.archs.main_sub.history_list import HistoryList
+from nexau.archs.tool.tool_registry import ToolRegistry
 from nexau.core.adapters.legacy import messages_from_legacy_openai_chat
 from nexau.core.messages import Message, Role, TextBlock, ToolResultBlock, ToolUseBlock
 from nexau.core.usage import TokenUsage
@@ -2115,6 +2118,82 @@ class TestEmergencyCompactionSessionId:
         assert compacted_summary.metadata.get("session_id") == "emergency_session_42"
         # Non-summary messages should NOT get session_id
         assert "session_id" not in kept_message.metadata
+
+    def test_wrap_model_call_retries_with_compacted_messages_and_records_direct_replace(
+        self,
+        agent_state,
+        mock_token_counter,
+    ):
+        """Emergency retry should use compacted messages and expose a direct history replace."""
+        mock_token_counter.count_tokens = Mock(return_value=100)
+
+        middleware = ContextCompactionMiddleware(
+            compaction_strategy="tool_result_compaction",
+            token_counter=mock_token_counter,
+            auto_compact=True,
+            emergency_compact_enabled=True,
+            max_context_tokens=4096,
+        )
+
+        original_messages = [
+            Message(role=Role.SYSTEM, content=[TextBlock(text="sys")]),
+            Message.user("large old context"),
+        ]
+        compacted_messages = [
+            Message(
+                role=Role.FRAMEWORK,
+                content=[TextBlock(text="Emergency summary")],
+                metadata={"is_compacted": True, "compaction_level": "emergency"},
+            ),
+            Message.user("latest question"),
+        ]
+        history = HistoryList(original_messages.copy())
+        framework_context = FrameworkContext(
+            agent_name="test_agent",
+            agent_id="test_id_123",
+            run_id="run_123",
+            root_run_id="run_123",
+            _tool_registry=ToolRegistry(),
+            _shutdown_event=Mock(),
+            _history=history,
+        )
+        middleware.emergency_compaction_strategy = Mock()
+        middleware.emergency_compaction_strategy.name = "user_model_full_trace_adaptive"
+        middleware.emergency_compaction_strategy.compact = Mock(return_value=compacted_messages)
+
+        params = ModelCallParams(
+            messages=original_messages,
+            max_tokens=512,
+            force_stop_reason=None,
+            agent_state=agent_state,
+            tool_call_mode="openai",
+            tools=None,
+            api_params={},
+            openai_client=Mock(),
+            llm_config=LLMConfig(
+                model="gpt-4o-mini",
+                base_url="https://api.openai.com/v1",
+                api_key="test-key",
+                api_type="openai_chat_completion",
+            ),
+            framework_context=framework_context,
+        )
+
+        retry_params: list[ModelCallParams] = []
+        retry_response = ModelResponse(content="retried answer", role="assistant")
+
+        def call_next(p: ModelCallParams) -> ModelResponse:
+            retry_params.append(p)
+            if len(retry_params) == 1:
+                raise RuntimeError("maximum context length exceeded")
+            return retry_response
+
+        result = middleware.wrap_model_call(params, call_next)
+
+        assert result is retry_response
+        assert retry_params[1].messages == compacted_messages
+        assert list(history) == compacted_messages
+        assert framework_context.history.consume_pending_replace_messages() == compacted_messages
 
     def test_wrap_model_call_no_session_id_when_none(
         self,

@@ -137,6 +137,26 @@ def _sync_history(
     history.replace_all(messages)
 
 
+def _realign_after_direct_history_replace(
+    framework_context: "FrameworkContext",
+    messages: list[Message],
+    token_trace_session: TokenTraceSession | None,
+) -> list[Message]:
+    """Realign local working messages after a direct ``ctx.history.replace``.
+
+    Hook-dispatched history events are handled at middleware boundaries and do
+    not flow through this helper. Its only current producer is emergency
+    compaction inside ``wrap_model_call``, which writes durable history directly
+    because it cannot return a HookResult to the executor.
+    """
+    replaced_messages = framework_context.history.consume_pending_replace_messages()
+    if replaced_messages is None:
+        return messages
+    if token_trace_session is not None:
+        token_trace_session.sync_external_messages(replaced_messages)
+    return replaced_messages
+
+
 def _emit_pending_history_event(
     framework_context: "FrameworkContext",
     event: "HistoryEvent | None",
@@ -169,6 +189,7 @@ def _emit_pending_history_event(
 
     if isinstance(event, ReplaceEvent):
         framework_context.history.replace(event.messages, extra=event.extra)
+        framework_context.history.clear_pending_replace_messages()
         return
     # AppendEvent / UndoEvent / UnknownEvent: no public ctx.history.*
     # method exposed yet (per RFC-0026's "narrow first" rule). Silently
@@ -890,6 +911,13 @@ class Executor:
                     # writes typed REPLACE via ctx.history.replace(...).
                     framework_context=framework_context,
                 )
+                # Emergency compaction writes durable history inside wrap_model_call.
+                # Realign the local working copy before any early exit can sync it back.
+                messages = _realign_after_direct_history_replace(
+                    framework_context,
+                    messages,
+                    token_trace_session,
+                )
                 if model_response is None:
                     break
 
@@ -1462,6 +1490,13 @@ class Executor:
             token_trace_session=state.token_trace_session,
             # RFC-0026: see sync-path comment.
             framework_context=state.framework_context,
+        )
+        # Emergency compaction writes durable history inside wrap_model_call.
+        # Realign the local working copy before any early exit can sync it back.
+        state.messages = _realign_after_direct_history_replace(
+            state.framework_context,
+            state.messages,
+            state.token_trace_session,
         )
         if model_response is None:
             return _IterationOutcome.BREAK

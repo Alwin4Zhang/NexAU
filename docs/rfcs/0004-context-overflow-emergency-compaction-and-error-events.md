@@ -81,6 +81,9 @@
      - `emergency_compact_enabled=true`
      - 捕获到 provider context overflow 错误标识（字符串匹配）
    - 触发后执行 `UserModelFullTraceAdaptiveCompaction`，完成后重试一次模型调用。
+   - 成功压缩后，`compacted_messages` 必须成为当前 run 的 durable working history；
+     不能只作为本次 retry 的 transient prompt，否则下一轮会继续使用旧 history
+     并重复触发 emergency 压缩。
 
 ### D. 固定“两段式” emergency 压缩策略
 
@@ -247,6 +250,9 @@ def counter(messages: list[Message], tools: list[dict[str, Any]] | None = None) 
 2. 对 breaking change 给出明确迁移方式与失败表现。
 3. 对超限治理明确两开关语义与触发边界。
 4. 对测试范围明确：仅 unit/integration。
+5. 覆盖 emergency durable-history 不变量：provider overflow 后 emergency
+   压缩成功并完成 retry，`agent.history` / 下一轮输入中必须包含
+   `compaction_level="emergency"` 的 summary message。
 
 ---
 

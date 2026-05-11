@@ -71,6 +71,7 @@ class HistoryAPI:
         _history: HistoryList | None,
     ) -> None:
         self._history = _history
+        self._pending_replace_messages: list[Message] | None = None
 
     def replace(
         self,
@@ -99,9 +100,25 @@ class HistoryAPI:
                 stays as the back-compat path for middleware that hasn't
                 migrated yet (RFC-0026 Stage 2 will close that gap).
         """
+        self._pending_replace_messages = list(messages)
         if self._history is None:
             return
         self._history.replace_all(messages, replace_extra=extra)
+
+    def consume_pending_replace_messages(self) -> list[Message] | None:
+        """Return and clear messages from a direct replace call.
+
+        ``wrap_model_call`` emergency compaction cannot return a HookResult, so
+        the executor uses this outbox to realign its local working history after
+        ``ctx.history.replace(...)`` succeeds.
+        """
+        messages = self._pending_replace_messages
+        self._pending_replace_messages = None
+        return messages
+
+    def clear_pending_replace_messages(self) -> None:
+        """Clear the direct-replace outbox after hook-dispatched events."""
+        self._pending_replace_messages = None
 
 
 class ExecutionAPI:
