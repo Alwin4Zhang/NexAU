@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 from typing import NamedTuple
 
+from sqlalchemy.exc import IntegrityError
+
 from nexau.core.messages import (
     Message,
     ReasoningBlock,
@@ -205,7 +207,9 @@ class AgentRunActionService:
         parent_run_id: str | None,
         agent_name: str,
         messages: list[Message],
-    ) -> AgentRunActionModel:
+        iter_index: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> AgentRunActionModel | None:
         """Persist an APPEND action.
 
         Args:
@@ -215,9 +219,22 @@ class AgentRunActionService:
             parent_run_id: Parent run ID (for sub-agents)
             agent_name: Agent name
             messages: List of messages produced in this run
+            iter_index: Iter-stream writer's monotonic counter within the run.
+                Phase 1 batch callers leave None; Phase 2 per-iter flush passes
+                ``state.iteration``. Lands in ``AppendExtra.iter_index``.
+            idempotency_key: UNIQUE-when-non-NULL dedup key for retry /
+                Consumer Group redelivery. Convention: ``f"{run_id}:{iter_index}"``
+                for iter-stream writers. Phase 1 batch callers leave None
+                (column allows multi-NULL — see RFC-0022 §6.2).
 
         Returns:
-            The created action record
+            The created action record, or ``None`` when a row with the same
+            ``idempotency_key`` already exists (idempotent collapse: caller-side
+            retry / Consumer Group redelivery — same iter, same content,
+            already durable). UNIQUE-violation handling matches ``persist_run_start`` /
+            ``persist_run_end``: swallow, log info, never raise. Real DB errors
+            are still propagated by the surrounding ``flush`` path's broad
+            ``Exception`` catch (see ``HistoryList._persist_flush_async``).
         """
         # Filter out system messages
         messages = [m for m in messages if m.role != Role.SYSTEM]
@@ -268,8 +285,24 @@ class AgentRunActionService:
             parent_run_id=parent_run_id,
             agent_name=agent_name,
             messages=messages,
+            iter_index=iter_index,
+            idempotency_key=idempotency_key,
         )
-        return await self._engine.create(record)
+        try:
+            return await self._engine.create(record)
+        except IntegrityError:
+            # Idempotent collapse: a row with the same idempotency_key already
+            # exists (caller-side retry, Consumer Group redelivery, or the
+            # rare case of two flushers racing on the same iter). The earlier
+            # write owns the content; this one is a no-op. Only IntegrityError
+            # (UNIQUE violation) is swallowed — other DB errors propagate.
+            logger.info(
+                "persist_append: idempotent collapse, key=%s run_id=%s idempotency_key=%s already persisted",
+                key,
+                run_id,
+                idempotency_key,
+            )
+            return None
 
     async def persist_undo(
         self,

@@ -153,7 +153,6 @@ def test_scenario_1_basic_run_lifecycle():
                 root_run_id=run_id,
                 messages=[user_msg, asst_iter1],
                 iter_index=1,
-                iter_kind="tool_round",
                 idempotency_key=f"{run_id}:1",
             )
             await eng.create(iter1)
@@ -168,7 +167,6 @@ def test_scenario_1_basic_run_lifecycle():
                 root_run_id=run_id,
                 messages=[asst_final],
                 iter_index=2,
-                iter_kind="final_response",
                 idempotency_key=f"{run_id}:2",
             )
             await eng.create(iter2)
@@ -205,7 +203,6 @@ def test_scenario_1_basic_run_lifecycle():
             iter1_extra = actions[1].parse_extra()
             assert isinstance(iter1_extra, AppendExtra)
             assert iter1_extra.iter_index == 1
-            assert iter1_extra.iter_kind == "tool_round"
 
             re_extra = actions[3].parse_extra()
             assert isinstance(re_extra, RunEndExtra)
@@ -510,8 +507,6 @@ def test_iter_level_idempotency_unique_constraint():
                 run_id="r1",
                 root_run_id="r1",
                 messages=[_msg("iter 0 result")],
-                iter_index=0,
-                iter_kind="tool_round",
                 idempotency_key="r1:0",
             )
             await eng.create(first)
@@ -524,8 +519,6 @@ def test_iter_level_idempotency_unique_constraint():
                 run_id="r1",
                 root_run_id="r1",
                 messages=[_msg("iter 0 result (dup)")],
-                iter_index=0,
-                iter_kind="tool_round",
                 idempotency_key="r1:0",  # ← collision
             )
             with pytest.raises(IntegrityError):

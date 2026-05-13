@@ -294,7 +294,7 @@ sequenceDiagram
 | `created_at_ns`          | `int` (`time.time_ns()`)            | 排序用;sparse,可能撞,见 §不变量 #3 |
 | `action_type`            | `str` (storage) / `RunActionType` StrEnum (write-side) | 5 种,见 §6.1;列类型保持 `str` 以保 forward-compat,详见 §设计原则 §6 |
 | `undo_before_run_id`     | `str \| None`                       | 仅 UNDO 用                            |
-| `idempotency_key`        | `str \| None` (UNIQUE,允许多 NULL) | 流式写入幂等键,约定 `"{run_id}:{iter_index}"`;批量 APPEND 留 NULL |
+| `idempotency_key`        | `str \| None` (UNIQUE,允许多 NULL) | 流式写入幂等键,约定 `"{run_id}:{iter_index}"`;批量 / 收尾 APPEND 留 NULL。**自 PR #547 起在生产路径启用**:executor per-iter flush 透传 `state.iteration` → `HistoryList.flush_async(iter_index=N)` → `persist_append(idempotency_key="{run_id}:{N}")`,UNIQUE 索引在 APPEND 上正式生效;`persist_append` 捕 `IntegrityError` 实现幂等 collapse(retry / Consumer Group redelivery 收敛到 1 行)|
 
 #### 档 2:JSONB + Pydantic 校验(3 个)
 
@@ -334,11 +334,16 @@ PROTOBUF_PHILOSOPHY = ConfigDict(extra='allow')
 
 # === APPEND ===
 class AppendExtra(BaseModel):
-    """Phase 2 iter 级密集化时填充。Phase 1 batch APPEND 路径可全 None。"""
+    """Phase 2 iter 级密集化时填充 ``iter_index``;Phase 1 batch APPEND 路径全 None。
+
+    曾包含 ``iter_kind`` (Literal["tool_round","final_response","subagent_call"]) 和
+    ``llm_call_id``,2026-05 删除(nexau#546 → #547):前者枚举边界没设计清楚
+    (subagent_call 与 tool_round 重叠 / 缺 errored / paused / ask_input / 维度混淆),
+    后者命名与 RFC-0023 ``ModelCallFinishedEvent.model_call_id`` 不一致。等真有
+    consumer 且设计收敛后再加(详见 §未解决问题)。
+    """
     model_config = PROTOBUF_PHILOSOPHY
     iter_index: int | None = None
-    iter_kind: str | None = None  # canonical: "tool_round" / "final_response" / "subagent_call"
-    llm_call_id: str | None = None
     trace_id: str | None = None
 
 
@@ -471,6 +476,56 @@ def create_run_end(
 #### 关于 `trace_id`
 
 每个 *Extra 都有 `trace_id: str | None` —— 当前唯一确认的 cross-mutation 关联场景(跟 langfuse 对账)。其他 ID(`tool_use_ids` / `child_run_ids` 等)等真消费者 co-design。如果未来 trace_id 查询频繁可以提到 top-level column 加 GIN 索引。
+
+### §6.4 ContentBlock id 跨流稳定性
+
+`ToolUseBlock` 历来有 `id: str`(LLM 自己赋的语义 id,做 tool_call 与 tool_result 配对用)。本 RFC 把同样的 id 字段补到 `TextBlock` / `ImageBlock` / `ReasoningBlock`,**Optional 兼容旧数据**:
+
+```python
+class TextBlock(ContentBlock):
+    type: Literal["text"] = "text"
+    id: str | None = None   # ← RFC-0022 新增
+    text: str
+
+class ImageBlock(ContentBlock):
+    type: Literal["image"] = "image"
+    id: str | None = None   # ← 同上
+    ...
+
+class ReasoningBlock(ContentBlock):
+    type: Literal["reasoning"] = "reasoning"
+    id: str | None = None   # ← 同上
+    text: str
+    ...
+```
+
+#### 动机:消除 live ↔ persisted 双流之间的 block 身份不连续
+
+UI consumer(nac-sdk frontend、NexAU Studio 等)同时订阅两条流来达成低延迟 + 持久化兼得:
+
+- **Live SSE**(`/agent-api/.../events`):runtime aggregator emit token 流,UI 即时渲染光标
+- **Persisted run_actions**(`GET /sessions/{sid}/actions`):落库后回放,reconnect / 刷新 / 切会话靠这条
+
+两条流里**同一个逻辑 block** 历来是用不同 id 表达的:
+
+| 来源 | 同一块 text 的 id |
+|---|---|
+| live SSE | aggregator 内部 UUID(`TextBlockBuilder.id = TEXT_MESSAGE_START.message_id`) |
+| persisted | UI consumer 拼出来的 fallback(`${actionId}:${index}:text`) |
+
+UI 在 live → persisted 切换瞬间(RUN_FINISHED + catchUp 落地)看到 React key 变,unmount/remount text 节点,**streaming 光标 / markdown 渲染状态被重建一次**,用户感知为「最后一段省略号变成输出」的视觉跳变。这是 nexau-cloud-runtime PR #549 一开始查的最后一个闪锅。
+
+#### 协议约定
+
+1. **runtime emit 路径**(LLM aggregator → `ModelResponse.to_ump_message()` → 持久化)必须把 SSE 的 `message_id` 灌进 ContentBlock.id 字段,**不再丢失**。
+2. **`message_id` 一处生成、跨流复用**:Set A(`llm_aggregators/`)和 Set B(`llm_caller.py` 的 `*StreamAggregator`)对同一个 upstream block 必须 emit **完全相等**的 message_id —— aggregator_parity harness 加断言。
+3. **旧数据兼容**:落库前不带 id 的 action 读出来 `id=None`,UI consumer fallback 走原来的位置 id 不变。
+4. **回看升级**:不做 DB migration / backfill —— 老 session 走 fallback 路径(行为不变),新 session 走 stable 路径。
+
+#### 失败模式
+
+- aggregator 漏填 id → 协议层 `id: str | None` 不报错,但 UI 仍然要走 fallback 路径 → 退化到老的位置 id → React key 仍然会在 live ↔ persisted 切换抖一下。parity harness 加「Set A emit 出的 TEXT_MESSAGE_START 必须有 message_id 且与 Set B emit 的相等」断言守住。
+- Set A 和 Set B 给同一块 emit 不同 message_id → parity harness fail,在 CI 拦截。
 
 ## Reduction 算法
 
@@ -684,10 +739,13 @@ Phase 2(iter 级持久化)曾阻塞在 [RFC-0023(Provider Stream Aggregator Unif
 ### Phase 2 — 持久化粒度切换:run 级 → iter 级(独立 PR,**核心阶段**)
 
 - 前置 ✅ RFC-0023 §阶段 ③ 已完成
-- `AgentRunner` 主循环在每个 iter 边界调用 `create_append`,run 入口写 `create_run_start`(reducer 拍快照供 UNDO 使用),run 出口写 `create_run_end`
-- 约定 `idempotency_key = "{run_id}:{iter_index}"`、`AppendExtra(iter_index=N, iter_kind="tool_round" | ...)`
+- ✅ **plumbing 已上线**(PR #547,2026-05):`Executor._persist_iter_progress` 在每个 CONTINUE iter 末尾调用 `history.flush_async(iter_index=state.iteration)` → `HistoryList._persist_flush_async` 合成 `idempotency_key=f"{run_id}:{N}"` → `persist_append(iter_index=N, idempotency_key=...)`。`persist_append` 捕 `IntegrityError` 做幂等 collapse,UNIQUE 索引在 APPEND 路径上正式生效
+- 余下:`AgentRunner` 主循环重构(把"批量 flush"改成"按 iter 边界调用",当前每 iter 一次 flush 已经基本满足语义,但 RUN_START / RUN_END 头尾包夹的强约束可以更紧),run 入口 `create_run_start` (reducer 拍快照供 UNDO),run 出口 `create_run_end`
 - **同时升级 fold / SQL 排序为 `(created_at_ns, action_id)` 复合键**
-- 配套决策(留待 Phase 2 实施 PR 内拍):tool 失败重试是否算新 iter、子 agent 是否拆 RUN_START/RUN_END、iter 中途 cancellation 走 `RUN_END.extra.status="cancelled"`
+- **前置设计(实施前必须收敛)**:
+  1. **iter 边界定义**:tool 失败重试是否算新 iter?子 agent 调用是父 iter 的 step 还是独立 RUN_START/RUN_END?中途 cancellation 在哪 iter 收尾?
+  2. **是否需要 iter 分类字段**:如果需要,枚举要重新设计——上一版 `IterKind = Literal["tool_round","final_response","subagent_call"]` 已删除(subagent_call 与 tool_round 重叠;缺 errored / paused / ask_input;混"执行状态"和"输出形态"两个维度)。新设计应该明确单一维度,或者拆成两个正交字段
+  3. **供应商 call ID 的归属**:如果需要从 history 行回追 LLM 供应商日志,字段应该叫 `model_call_id`(和 RFC-0023 `ModelCallFinishedEvent.model_call_id` 对齐),且很可能挂在 `Message.model_call_id` 而不是 `AppendExtra` 上(message 级属性,一次 LLM call 可能产出多条/或一条 message 跨多次重试,挂 APPEND 行级归属不清)
 
 ### Phase 3 — 压缩策略层接入(独立 PR)
 
@@ -816,6 +874,11 @@ Phase 1 不引入新行为,集成测试 Phase 2 / 3 / 4 落地时跟进:
 1. **iter 边界的精确定义**(Phase 2 决策点):一个 iter 的边界究竟在 LLM 响应解析后,还是 tool 全部执行完后?tool 失败 retry 是同一 iter 还是新 iter?子 agent 调用是父 iter 内部的一个 step,还是独立 RUN_START/RUN_END?这些会显著影响 reduction 结果和 UI 时间线粒度,留待 Phase 2 实现 PR 中正式拍板
 
 2. **iter 级写入的事务边界**:iter 级 APPEND 失败时如何处理?重试粒度是 iter 还是 run?当前倾向"iter 写失败即 run 失败,触发 RUN_END.status=error",但未压力测试
+
+2.5. **AppendExtra 上的 iter 分类字段 / 供应商 call ID**(2026-05 nexau#547 删除遗留):上一版 `AppendExtra` 含 `iter_kind: Literal["tool_round","final_response","subagent_call"]` 和 `llm_call_id: str | None`,但都没有 producer。两者都被删除等待重新设计:
+   - `iter_kind` 枚举边界没设计清楚——subagent_call 和 tool_round 重叠(子 agent 调用从父视角看就是一次 tool round);缺 errored / paused / ask_input 等状态;混了"执行状态"和"输出形态"两个维度。Phase 2 实施前要么明确单维度枚举,要么拆成两个正交字段
+   - `llm_call_id` 命名和 RFC-0023 已落地的 `ModelCallFinishedEvent.model_call_id` 不一致;且供应商 call ID 是 message 级属性(一次 LLM call 可能产出多条 message,一条 message 也可能跨多次重试),挂在 `AppendExtra` 上归属不清。如果将来要支持"从 history 行回追供应商日志",更可能的位置是 `AssistantMessage.model_call_id` 而不是 APPEND extra
+   - `iter_index` 已保留(纯序数,语义争议比 `iter_kind` 小一档)。**PR #547 同时把 plumbing 推到生产**:executor → HistoryList → persist_append 整条链路都接 `iter_index`,APPEND 行写出 `extra={"iter_index": N}` + `idempotency_key="{run_id}:{N}"`,`IntegrityError` 触发幂等 collapse。Phase 2 还要做的是"是否再额外加分类字段 / model_call_id"——`iter_index` 本身不再阻塞
 
 3. **per-token / per-block streaming**(更细粒度):本 RFC 把**持久化的最小粒度定死在 mutation(iter)级**。token 级实时展示走完全独立的旁路——Set A `llm_aggregators` emit 的 **agent events**(per-token / per-block),由前端 SSE 直接消费,**不进 RunAction 流**。两条流的分工固定:**持久化最小粒度永远是 mutation,实时展示走 agent events**。即便未来加更细 UI 需求,也走 events 那条路;不会引入 `APPEND_DELTA` 这种破坏 fold 不变量的细化 action_type
 

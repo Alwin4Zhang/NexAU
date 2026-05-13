@@ -456,6 +456,6 @@ def test_create_undo_with_arbitrary_reason():
 
 
 def test_append_extra_unchanged_by_replace_union_refactor():
-    e = AppendExtra(iter_index=3, iter_kind="tool_round")
+    e = AppendExtra(iter_index=3, trace_id="trace-xyz")
     assert e.iter_index == 3
-    assert e.iter_kind == "tool_round"
+    assert e.trace_id == "trace-xyz"

@@ -1615,7 +1615,12 @@ class Executor:
             return
         history.replace_all(state.messages)
         try:
-            await history.flush_async()
+            # state.iteration is the just-completed iter index (incremented
+            # AFTER this method returns at executor.py: state.iteration += 1).
+            # Pass it as iter_index so the APPEND row carries
+            # AppendExtra.iter_index=N and idempotency_key="{run_id}:{N}",
+            # making the per-iter UNIQUE dedup actually fire on retries.
+            await history.flush_async(iter_index=state.iteration)
         except Exception as exc:
             # Per-iter flush is best-effort. Failure here means the iter's
             # messages stay in _pending and the next flush (or end-of-run

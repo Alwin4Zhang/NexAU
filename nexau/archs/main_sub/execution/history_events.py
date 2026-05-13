@@ -84,10 +84,9 @@ class AppendEvent(BaseModel):
     Today APPENDs flow through ``HistoryList.append/extend`` (the list-
     interface side) and the executor's normal flush path; no middleware
     has needed to emit a typed APPEND through this channel. Reserved
-    for future writers that want to carry ``AppendExtra`` (iter_index /
-    iter_kind / llm_call_id / trace_id) without touching the list
-    interface — e.g. tool-call boundary middleware that wants to tag
-    APPENDs with iter metadata.
+    for future writers that want to carry ``AppendExtra`` (currently just
+    ``trace_id``) without touching the list interface — e.g. tool-call
+    boundary middleware that wants to tag APPENDs with run metadata.
     """
 
     model_config = PROTOBUF_PHILOSOPHY

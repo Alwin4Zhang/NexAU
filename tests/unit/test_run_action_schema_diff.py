@@ -82,8 +82,6 @@ FROZEN_SCHEMA: dict[str, dict[str, str]] = {
     },
     "AppendExtra": {
         "iter_index": "int | None",
-        "iter_kind": "str | None",
-        "llm_call_id": "str | None",
         "trace_id": "str | None",
     },
     # ReplaceExtra is now a discriminated union over per-reason variants.

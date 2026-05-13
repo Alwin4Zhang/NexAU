@@ -317,6 +317,7 @@ class HistoryList(list[Message]):
         *,
         append_messages: list[Message] | None,
         replace_messages: list[Message] | None,
+        iter_index: int | None = None,
     ) -> None:
         if not self._session_manager or not self._history_key:
             return
@@ -338,6 +339,11 @@ class HistoryList(list[Message]):
             elif append_messages is not None:
                 if not append_messages:
                     return
+                # RFC-0022 Phase 2 plumbing: when caller passes iter_index, also
+                # compose idempotency_key="{run_id}:{iter_index}" so retries /
+                # Consumer Group redeliveries collapse on UNIQUE. iter_index=None
+                # (Phase 1 batch / end-of-run trailing flush) keeps key=NULL.
+                idempotency_key = f"{run_id}:{iter_index}" if iter_index is not None else None
                 await self._session_manager.agent_run_action.persist_append(
                     key=self._history_key,
                     run_id=run_id,
@@ -345,6 +351,8 @@ class HistoryList(list[Message]):
                     parent_run_id=self._parent_run_id,
                     agent_name=self._agent_name,
                     messages=append_messages,
+                    iter_index=iter_index,
+                    idempotency_key=idempotency_key,
                 )
         except Exception as e:
             logger.error(f"❌ Failed to flush history: {e}")
@@ -395,7 +403,7 @@ class HistoryList(list[Message]):
 
         return append_messages, replace_messages, current_non_system
 
-    def flush(self) -> None:
+    def flush(self, *, iter_index: int | None = None) -> None:
         """Flush pending messages to persistence (fire-and-forget).
 
         This should be called at the end of each run to persist all accumulated messages.
@@ -403,6 +411,13 @@ class HistoryList(list[Message]):
         **not** awaited.  Use :meth:`flush_async` when you need to guarantee the
         write has completed before continuing (e.g. on error paths where the event
         loop may shut down shortly after).
+
+        Args:
+            iter_index: RFC-0022 Phase 2. When provided, the resulting APPEND row
+                carries ``AppendExtra.iter_index`` and ``idempotency_key=
+                f"{run_id}:{iter_index}"``. Pass the just-completed iter index
+                from per-iter flush sites; leave None for end-of-run trailing
+                flushes (batch semantics, key NULL).
         """
         if not self._persistence_enabled:
             return
@@ -414,19 +429,23 @@ class HistoryList(list[Message]):
                 self._persist_flush_async(
                     append_messages=append_messages,
                     replace_messages=replace_messages,
+                    iter_index=iter_index,
                 )
             )
 
         self._pending_messages.clear()
         self._baseline_fingerprints = self._compute_fingerprints(current_non_system)
 
-    async def flush_async(self) -> None:
+    async def flush_async(self, *, iter_index: int | None = None) -> None:
         """Flush pending messages to persistence (awaitable).
 
         Same semantics as :meth:`flush` but **awaits** the persistence I/O instead
         of scheduling it as a fire-and-forget task.  Use this on error / cleanup
         paths where the caller needs to ensure data is written before the coroutine
         or event loop exits.
+
+        Args:
+            iter_index: See :meth:`flush`.
         """
         if not self._persistence_enabled:
             return
@@ -437,6 +456,7 @@ class HistoryList(list[Message]):
             await self._persist_flush_async(
                 append_messages=append_messages,
                 replace_messages=replace_messages,
+                iter_index=iter_index,
             )
 
         self._pending_messages.clear()

@@ -39,11 +39,28 @@ class ContentBlock(BaseModel):
 
 class TextBlock(ContentBlock):
     type: Literal["text"] = "text"
+    # RFC-0022: cross-stream stable block identifier.
+    #
+    # When populated, this is the same id the live SSE aggregator
+    # assigns (``TEXT_MESSAGE_START.message_id``), preserved verbatim
+    # through persistence so a downstream consumer rendering both the
+    # live stream and the persisted action history sees ONE logical
+    # block, not two with different React keys / one needing replacement.
+    #
+    # Optional for backward compatibility: actions persisted before
+    # this field landed have ``id=None``; consumers fall back to a
+    # synthetic id (typically position-based on the persisted side)
+    # without breaking. New code paths (LLM aggregators emitting via
+    # ``ModelResponse.to_ump_message``) MUST populate this from the
+    # upstream message_id — see ``llm_caller.py`` ``*StreamAggregator``.
+    id: str | None = None
     text: str
 
 
 class ImageBlock(ContentBlock):
     type: Literal["image"] = "image"
+    # RFC-0022: see TextBlock.id docstring.
+    id: str | None = None
     url: str | None = None
     base64: str | None = None
     mime_type: str = "image/jpeg"
@@ -247,6 +264,8 @@ class ReasoningBlock(ContentBlock):
     """Optional chain-of-thought style content (store-only; consumers can ignore)."""
 
     type: Literal["reasoning"] = "reasoning"
+    # RFC-0022: see TextBlock.id docstring.
+    id: str | None = None
     text: str
     signature: str | None = None
     redacted_data: str | None = None

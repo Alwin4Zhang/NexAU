@@ -90,15 +90,23 @@ PROTOBUF_PHILOSOPHY = ConfigDict(extra="allow")
 class AppendExtra(BaseModel):
     """Extra metadata for APPEND actions.
 
-    Phase 2 (iter 级持久化) fills these. Phase 1 batch APPEND keeps all None.
+    ``iter_index`` is the writer's monotonic counter within a run (Phase 1
+    batch APPEND leaves it None; Phase 2 iter-stream writers fill it).
+    Anchors the ``idempotency_key="{run_id}:{iter_index}"`` convention so
+    UNIQUE-when-non-NULL dedup works on retries / Consumer Group redeliveries.
+
+    ``iter_kind`` (was: tool_round / final_response / subagent_call) and
+    ``llm_call_id`` were removed in the same cleanup that introduced this
+    docstring — the IterKind taxonomy had unsettled boundaries (subagent
+    overlap, missing errored/paused/ask_input, mixed dimensions) and
+    ``llm_call_id`` clashed with RFC-0023 ``ModelCallFinishedEvent.model_call_id``.
+    Re-add when there's a concrete consumer + a settled design (see RFC-0022
+    §未解决问题).
     """
 
     model_config = PROTOBUF_PHILOSOPHY
 
     iter_index: int | None = None
-    iter_kind: str | None = None
-    """canonical: 'tool_round' / 'final_response' / 'subagent_call'."""
-    llm_call_id: str | None = None
     trace_id: str | None = None
 
 
@@ -329,7 +337,6 @@ RunActionExtra = AppendExtra | ReplaceExtra | UndoExtra | RunStartExtra | RunEnd
 # ``UndoReason`` stays free-form (no per-variant fields differentiate, so
 # variant union doesn't pay off; document canonical values via field doc).
 RunStatus = Literal["ok", "error", "cancelled"]
-IterKind = Literal["tool_round", "final_response", "subagent_call"]
 
 
 # TypeAdapter for list[Message] serialization
@@ -469,22 +476,17 @@ class AgentRunActionModel(SQLModel, table=True):
         parent_run_id: str | None = None,
         agent_name: str = "",
         iter_index: int | None = None,
-        iter_kind: IterKind | None = None,
-        llm_call_id: str | None = None,
         trace_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> AgentRunActionModel:
         """Create an APPEND action — incremental messages in this run.
 
-        Phase 2 iter 级持久化 fills ``iter_index`` / ``iter_kind`` / ``llm_call_id``;
-        Phase 1 batch APPEND can leave them None.
+        Phase 2 iter-stream writers pass ``iter_index`` (monotonic within run);
+        Phase 1 batch APPEND leaves it None. ``idempotency_key`` is the caller's
+        choice — convention is ``f"{run_id}:{iter_index}"`` for iter-stream
+        writers, ``None`` for batch.
         """
-        extra = AppendExtra(
-            iter_index=iter_index,
-            iter_kind=iter_kind,
-            llm_call_id=llm_call_id,
-            trace_id=trace_id,
-        )
+        extra = AppendExtra(iter_index=iter_index, trace_id=trace_id)
         return cls(
             user_id=user_id,
             session_id=session_id,

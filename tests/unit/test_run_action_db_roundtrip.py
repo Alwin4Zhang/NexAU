@@ -138,8 +138,6 @@ def test_append_extra_roundtrip_db():
                 root_run_id="r1",
                 messages=[_msg("hello")],
                 iter_index=3,
-                iter_kind="tool_round",
-                llm_call_id="msg_01ABC",
                 trace_id="trace_xyz",
                 idempotency_key="r1:3",
             )
@@ -159,8 +157,6 @@ def test_append_extra_roundtrip_db():
             extra = read_back.parse_extra()
             assert isinstance(extra, AppendExtra)
             assert extra.iter_index == 3
-            assert extra.iter_kind == "tool_round"
-            assert extra.llm_call_id == "msg_01ABC"
             assert extra.trace_id == "trace_xyz"
 
     asyncio.run(run())
@@ -743,8 +739,6 @@ def test_tool_result_block_raw_output_roundtrip_db():
                 run_id="r1",
                 root_run_id="r1",
                 messages=[tool_msg],
-                iter_index=0,
-                iter_kind="tool_round",
                 idempotency_key="r1:0",
             )
             await eng.create(written)
@@ -984,8 +978,6 @@ def test_tool_result_block_raw_output_as_list_roundtrip():
                 run_id="r_list",
                 root_run_id="r_list",
                 messages=[tool_msg],
-                iter_index=0,
-                iter_kind="tool_round",
                 idempotency_key="r_list:0",
             )
             await eng.create(written)
@@ -1039,8 +1031,6 @@ def test_tool_result_block_raw_output_with_unicode_and_nested_dict_roundtrip():
                 run_id="r_uni",
                 root_run_id="r_uni",
                 messages=[tool_msg],
-                iter_index=0,
-                iter_kind="tool_round",
                 idempotency_key="r_uni:0",
             )
             await eng.create(written)
