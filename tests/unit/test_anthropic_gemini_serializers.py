@@ -6,7 +6,12 @@ from nexau.core.serializers.anthropic_messages import (
 from nexau.core.serializers.gemini_messages import serialize_ump_to_gemini_messages_payload
 
 
-def test_anthropic_serializer_downgrades_unsigned_reasoning_with_companion_content_and_keeps_signed_thinking() -> None:
+def test_anthropic_serializer_drops_unsigned_reasoning_when_companion_content_exists() -> None:
+    """Bug fix: unsigned reasoning is DROPPED (not demoted to text) when
+    the message has any companion content. Pre-fix this demoted to text,
+    causing the agent's internal reasoning to appear as the assistant's
+    reply (the Bedrock claude-opus-4.x orphan thinking_delta symptom).
+    """
     system_blocks, convo = serialize_ump_to_anthropic_messages_payload(
         [
             Message(role=Role.SYSTEM, content=[TextBlock(text="sys")], metadata={"cache": True}),
@@ -23,12 +28,29 @@ def test_anthropic_serializer_downgrades_unsigned_reasoning_with_companion_conte
 
     assert system_blocks == [{"type": "text", "text": "sys", "_cache": True}]
     blocks = convo[0]["content"]
-    assert blocks[0] == {"type": "text", "text": "unsigned reasoning"}
-    assert blocks[1] == {"type": "thinking", "thinking": "signed thinking", "signature": "sig_1"}
-    assert blocks[2] == {"type": "text", "text": "answer"}
+    # Unsigned reasoning dropped; only signed thinking + text reply remain.
+    assert len(blocks) == 2
+    assert blocks[0] == {"type": "thinking", "thinking": "signed thinking", "signature": "sig_1"}
+    assert blocks[1] == {"type": "text", "text": "answer"}
+    # The unsigned reasoning string MUST NOT appear anywhere in outbound.
+    assert "unsigned reasoning" not in str(convo)
 
 
-def test_anthropic_serializer_downgrades_unsigned_reasoning_only_message() -> None:
+def test_anthropic_serializer_stubs_unsigned_reasoning_only_message() -> None:
+    """Edge case: when a message has ONLY unsigned reasoning and no
+    companion content, emit a neutral `[reasoning omitted]` stub.
+
+    Why stub instead of demoting the reasoning text to a `text` block:
+      - Anthropic rejects messages with content=[], so we MUST emit
+        something.
+      - Demoting the reasoning to text leaks the agent's internal
+        stream-of-consciousness into the next-turn LLM context as
+        if it were the assistant's reply — re-introducing the exact
+        bug Layer 3 was meant to fix, just in a smaller probability
+        window.
+      - The stub preserves Anthropic's user/assistant alternation
+        without any leak.
+    """
     _system_blocks, convo = serialize_ump_to_anthropic_messages_payload(
         [
             Message(
@@ -38,10 +60,12 @@ def test_anthropic_serializer_downgrades_unsigned_reasoning_only_message() -> No
         ]
     )
 
-    assert convo[0]["content"] == [{"type": "text", "text": "reasoning only"}]
+    assert convo[0]["content"] == [{"type": "text", "text": "[reasoning omitted]"}]
+    assert "reasoning only" not in str(convo)
 
 
-def test_anthropic_serializer_downgrades_unsigned_reasoning_with_tool_call() -> None:
+def test_anthropic_serializer_drops_unsigned_reasoning_when_tool_call_companion() -> None:
+    """Tool-use companion counts as content — reasoning still dropped."""
     _system_blocks, convo = serialize_ump_to_anthropic_messages_payload(
         [
             Message(
@@ -55,13 +79,15 @@ def test_anthropic_serializer_downgrades_unsigned_reasoning_with_tool_call() -> 
     )
 
     blocks = convo[0]["content"]
-    assert blocks[0] == {"type": "text", "text": "choose tool"}
-    assert blocks[1] == {
+    # Reasoning dropped; only tool_use remains.
+    assert len(blocks) == 1
+    assert blocks[0] == {
         "type": "tool_use",
         "id": "call_1",
         "name": "lookup",
         "input": {"query": "weather"},
     }
+    assert "choose tool" not in str(convo)
 
 
 def test_anthropic_serializer_allows_unsigned_thinking_when_configured() -> None:

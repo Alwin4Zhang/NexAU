@@ -223,8 +223,13 @@ class TestAnthropicAdapterReasoningBlock:
         assert thinking_blocks[0]["thinking"] == "my thinking"
         assert thinking_blocks[0]["signature"] == "sig1"
 
-    def test_reasoning_block_without_signature_downgraded_with_answer_content(self):
-        """Anthropic payloads must not contain unsigned thinking blocks."""
+    def test_reasoning_block_without_signature_dropped_when_answer_content_present_cross_provider(self):
+        """Cross-provider: OpenAI completion reasoning_content lands as
+        UMP ReasoningBlock(signature=None) which Anthropic outbound must
+        DROP (companion answer content exists). Pre-fix the unsigned
+        reasoning was demoted to a text block — same leak symptom as
+        the Bedrock Claude orphan-thinking case.
+        """
         adapter = AnthropicMessagesAdapter()
         messages = [
             Message(
@@ -240,7 +245,8 @@ class TestAnthropicAdapterReasoningBlock:
         thinking_blocks = [b for b in blocks if b.get("type") == "thinking"]
         assert thinking_blocks == []
         text_blocks = [b for b in blocks if b.get("type") == "text"]
-        assert [b["text"] for b in text_blocks] == ["openai reasoning content", "my answer"]
+        assert [b["text"] for b in text_blocks] == ["my answer"]
+        assert "openai reasoning content" not in str(convo)
 
     def test_reasoning_block_empty_text_no_signature_omitted_with_answer_content(self):
         """Empty unsigned reasoning cannot be sent as Anthropic thinking."""
@@ -275,8 +281,13 @@ class TestAnthropicAdapterReasoningBlock:
         assert len(redacted) == 1
         assert redacted[0]["data"] == "encrypted_blob"
 
-    def test_reasoning_block_without_signature_downgraded_as_text_with_answer_content(self):
-        """ReasoningBlock with companion answer content is plain text without a signature."""
+    def test_reasoning_block_without_signature_dropped_when_answer_content_present(self):
+        """ReasoningBlock with companion answer content is DROPPED (not
+        demoted to text). Pre-fix the unsigned reasoning was demoted to
+        a text block — that leaked the agent's internal reasoning into
+        the LLM's outbound context as if it were the assistant's reply.
+        See tests/unit/test_orphan_thinking_signature.py for root cause.
+        """
         adapter = AnthropicMessagesAdapter()
         messages = [
             Message(
@@ -292,10 +303,18 @@ class TestAnthropicAdapterReasoningBlock:
         thinking_blocks = [b for b in blocks if b.get("type") == "thinking"]
         assert thinking_blocks == []
         text_blocks = [b for b in blocks if b.get("type") == "text"]
-        assert [b["text"] for b in text_blocks] == ["interrupted thinking", "answer"]
+        # Only the answer reaches outbound. "interrupted thinking" is
+        # gone — it would have leaked as a text block pre-fix.
+        assert [b["text"] for b in text_blocks] == ["answer"]
+        assert "interrupted thinking" not in str(convo)
 
-    def test_reasoning_block_with_empty_signature_downgraded_as_text_with_answer_content(self):
-        """Empty string signature is treated as missing."""
+    def test_reasoning_block_with_empty_signature_dropped_when_answer_content_present(self):
+        """Empty string signature == missing. With companion content, the
+        reasoning block is dropped (Layer 2 of the orphan-thinking fix:
+        the Pydantic validator on ReasoningBlock also coerces "" to None
+        at load time, but the runtime in-memory case here exercises the
+        serializer's downstream drop logic directly).
+        """
         adapter = AnthropicMessagesAdapter()
         messages = [
             Message(
@@ -311,7 +330,8 @@ class TestAnthropicAdapterReasoningBlock:
         thinking_blocks = [b for b in blocks if b.get("type") == "thinking"]
         assert thinking_blocks == []
         text_blocks = [b for b in blocks if b.get("type") == "text"]
-        assert [b["text"] for b in text_blocks] == ["thinking cut off", "response"]
+        assert [b["text"] for b in text_blocks] == ["response"]
+        assert "thinking cut off" not in str(convo)
 
     def test_reasoning_block_empty_text_and_no_signature_omitted_with_answer_content(self):
         """Empty unsigned reasoning_content is omitted for Anthropic payload validity."""
@@ -329,8 +349,16 @@ class TestAnthropicAdapterReasoningBlock:
         blocks = convo[0]["content"]
         assert blocks == [{"type": "text", "text": "answer"}]
 
-    def test_reasoning_only_block_without_signature_downgraded_to_text(self):
-        """Only reasoning_content is downgraded to plain text when no companion output exists."""
+    def test_reasoning_only_block_without_signature_stubbed_to_avoid_leak(self):
+        """A message with ONLY unsigned reasoning gets replaced by a neutral
+        stub — the actual reasoning text is NEVER emitted as outbound text.
+
+        Previously the serializer downgraded the reasoning content to
+        `{"type": "text", "text": <reasoning>}`, which leaked the agent's
+        internal stream-of-consciousness into the next-turn LLM context
+        disguised as the assistant's reply. The stub preserves Anthropic's
+        required user/assistant alternation without that leak.
+        """
         adapter = AnthropicMessagesAdapter()
         messages = [
             Message(
@@ -339,7 +367,8 @@ class TestAnthropicAdapterReasoningBlock:
             ),
         ]
         _, convo = adapter.to_vendor_format(messages)
-        assert convo[0]["content"] == [{"type": "text", "text": "standalone thinking"}]
+        assert convo[0]["content"] == [{"type": "text", "text": "[reasoning omitted]"}]
+        assert "standalone thinking" not in str(convo)
 
     def test_tool_result_batching(self):
         """Consecutive TOOL messages should be merged into a single user message."""

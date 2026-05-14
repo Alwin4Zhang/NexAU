@@ -269,6 +269,11 @@ class ReasoningBlock(ContentBlock):
     text: str
     signature: str | None = None
     redacted_data: str | None = None
+    # Legacy persisted rows may carry signature="" (orphan thinking_delta
+    # pre-fix). No load-side coercion needed: the Anthropic serializer
+    # already treats falsy signatures (None and "") identically via its
+    # `if block.signature:` truthy check — both fall into the unsigned
+    # default-DROP branch.
 
 
 class ToolUseBlock(ContentBlock):

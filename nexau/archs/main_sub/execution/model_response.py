@@ -428,8 +428,38 @@ class ModelResponse:
             elif block_type == "thinking":
                 if isinstance(thinking_val, str):
                     reasoning_parts.append(thinking_val)
-                if isinstance(signature_val, str):
+                # Empty signature == "no signature_delta arrived" (orphan
+                # thinking_delta, sometimes seen on Bedrock claude-opus-4.x
+                # for short / interrupted reasoning). The Anthropic SDK's
+                # ThinkingBlock requires `signature: str` so the aggregator
+                # pre-allocates `signature=""` and updates it on SignatureDelta;
+                # when SignatureDelta never arrives, the empty string leaks
+                # through to UMP `ReasoningBlock.signature=""` and is
+                # persisted as such. Downstream
+                # `serialize_ump_to_anthropic_messages_payload` then runs
+                # `if block.signature:` (falsy), falls past the proper
+                # thinking-block branch, and demotes the reasoning content
+                # to a plain `text` block — user-visible "thinking content
+                # leaked into the assistant reply" symptom. Coerce empty
+                # string to None at this UMP boundary so persistence carries
+                # the canonical "unsigned" signal.
+                if isinstance(signature_val, str) and signature_val:
                     thinking_signature = signature_val
+                elif isinstance(signature_val, str):
+                    # Empty-string signature observed — record for forensics.
+                    # Tier-1+2 observability (PR #554): log + trace-attribute
+                    # so we can later answer "how often does this fire, on
+                    # which model / agent / gateway".
+                    from nexau.archs.main_sub.execution.llm_caller import record_thinking_signature_event
+
+                    model_attr: Any = getattr(message_obj, "model", None)
+                    id_attr: Any = getattr(message_obj, "id", None)
+                    record_thinking_signature_event(
+                        "layer1_empty_signature",
+                        model=str(model_attr) if model_attr is not None else None,
+                        thinking_len=len(thinking_val) if isinstance(thinking_val, str) else 0,
+                        raw_message_id=str(id_attr) if id_attr is not None else None,
+                    )
             elif block_type == "redacted_thinking":
                 if isinstance(redacted_thinking_val, str):
                     redacted_thinking_data = redacted_thinking_val

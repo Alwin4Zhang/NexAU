@@ -239,8 +239,15 @@ class TestTwoTurnPayloadMatrix:
         text_blocks = [block for block in assistant_blocks if block.get("type") == "text"]
 
         if expected_signature is None:
+            # Unsigned reasoning is DROPPED (not demoted to text) by the
+            # Anthropic serializer — the agent's internal reasoning must
+            # not appear in the outbound LLM context as if it were the
+            # assistant's reply (Bedrock claude-opus-4.x orphan
+            # `thinking_delta` symptom; see
+            # tests/unit/test_orphan_thinking_signature.py for full root-
+            # cause notes). Only the final answer reaches outbound.
             assert thinking_blocks == []
-            assert text_blocks[0]["text"] == expected_thinking_text
+            assert expected_thinking_text not in str(text_blocks)
         else:
             assert len(thinking_blocks) == 1
             assert thinking_blocks[0]["thinking"] == expected_thinking_text
@@ -281,11 +288,11 @@ class TestTwoTurnPayloadMatrix:
         [
             ("completion", "completion", "reasoning_content"),
             ("completion", "responses", "reconstructed_reasoning_replay"),
-            ("completion", "claude", "unsigned_reasoning_text"),
+            ("completion", "claude", "unsigned_reasoning_dropped"),
             ("completion", "gemini", "thought_part"),
             ("responses", "completion", "response_items_plus_reasoning_content"),
             ("responses", "responses", "typed_reasoning_replay"),
-            ("responses", "claude", "unsigned_reasoning_text"),
+            ("responses", "claude", "unsigned_reasoning_dropped"),
             ("responses", "gemini", "thought_part"),
             ("claude", "completion", "reasoning_content_plus_signature"),
             ("claude", "responses", "reconstructed_reasoning_replay"),
@@ -293,7 +300,7 @@ class TestTwoTurnPayloadMatrix:
             ("claude", "gemini", "thought_part"),
             ("gemini", "completion", "reasoning_content_plus_thought_signature"),
             ("gemini", "responses", "reconstructed_reasoning_replay"),
-            ("gemini", "claude", "unsigned_reasoning_text"),
+            ("gemini", "claude", "unsigned_reasoning_dropped"),
             ("gemini", "gemini", "thought_part_with_signature"),
         ],
     )
@@ -342,10 +349,17 @@ class TestTwoTurnPayloadMatrix:
             if expected_policy == "signed_thinking":
                 assert len(thinking_blocks) == 1
                 assert thinking_blocks[0]["signature"] == "claude_sig"
-            elif expected_policy == "unsigned_reasoning_text":
+            elif expected_policy == "unsigned_reasoning_dropped":
+                # Reasoning content is DROPPED from outbound (the agent's
+                # internal reasoning should not appear in the LLM's
+                # outbound context). Reasoning content stays in persisted
+                # ReasoningBlock for audit / drill-down.
                 assert thinking_blocks == []
+                # The reasoning content MUST NOT appear in any text block.
                 text_blocks = [block for block in assistant_blocks if block.get("type") == "text"]
-                assert text_blocks[0]["text"] in {"completion reasoning", "responses reasoning summary", "gemini thought"}
+                serialized = str(text_blocks)
+                for reasoning_text in ("completion reasoning", "responses reasoning summary", "gemini thought"):
+                    assert reasoning_text not in serialized
             else:
                 raise AssertionError(f"Unexpected claude policy {expected_policy}")
             return
@@ -365,8 +379,14 @@ class TestTwoTurnPayloadMatrix:
 
         raise AssertionError(f"Unexpected target {target_name}")
 
-    def test_claude_target_downgrades_unsigned_reasoning_only_to_text(self):
-        """Only reasoning_content is downgraded when no answer content or tool calls exist."""
+    def test_claude_target_stubs_unsigned_reasoning_only_to_avoid_leak(self):
+        """When an assistant message has ONLY unsigned reasoning (no answer
+        content / tool calls), the Anthropic serializer emits a neutral
+        `[reasoning omitted]` stub instead of leaking the reasoning text.
+
+        Previously the serializer demoted reasoning to text, re-introducing
+        the agent's stream-of-consciousness into the next-turn LLM context.
+        """
         response = ModelResponse(reasoning_content="standalone reasoning")
         history = [Message.user(_TASK_A), response.to_ump_message(), Message.user(_TASK_B)]
 
@@ -377,4 +397,5 @@ class TestTwoTurnPayloadMatrix:
         assert thinking_blocks == []
 
         text_blocks = [block for block in assistant_blocks if block.get("type") == "text"]
-        assert text_blocks[0]["text"] == "standalone reasoning"
+        assert text_blocks[0]["text"] == "[reasoning omitted]"
+        assert "standalone reasoning" not in str(payload)

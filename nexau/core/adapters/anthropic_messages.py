@@ -18,7 +18,11 @@ class AnthropicMessagesAdapter(LLMAdapter):
     - messages: list[{"role": "...", "content": [blocks...]}]
     """
 
-    def __init__(self, *, allow_unsigned_thinking: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        allow_unsigned_thinking: bool = False,
+    ) -> None:
         self.allow_unsigned_thinking = allow_unsigned_thinking
 
     def to_vendor_format(self, messages: list[Message]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

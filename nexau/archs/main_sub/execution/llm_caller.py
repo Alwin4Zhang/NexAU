@@ -29,11 +29,13 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from nexau.archs.main_sub.framework_context import FrameworkContext
 
+import anthropic
 import httpx
 import openai
 import requests
@@ -147,6 +149,109 @@ def _log_llm_debug_request(messages: Sequence[Message]) -> None:
 
 def _log_llm_debug_response(model_response: ModelResponse) -> None:
     logger.info(f"🐛 [DEBUG] LLM Response: {model_response.render_text()}")
+
+
+# Layer 4: catch `400 Invalid signature in thinking block` (legacy rows
+# whose signature is non-empty but invalid — corrupted / model-version
+# stale / cross-gateway), strip all ReasoningBlock signatures, retry once.
+# Layer 3's default unsigned-thinking-drop branch then handles the
+# stripped messages naturally. See commit f8e6faa5 / PR #554 for the
+# full bug story.
+
+
+_THINKING_SIGNATURE_ERROR_MARKERS = (
+    "invalid `signature` in `thinking`",
+    "invalid signature in thinking",
+    'invalid "signature" in "thinking"',
+)
+
+
+def record_thinking_signature_event(layer: str, **fields: Any) -> None:
+    """Tier-1+2 observability for the orphan-thinking-signature defense.
+
+    Emits a structured log line AND attaches counters + context fields to
+    the currently-active trace span (if any). Each defense layer (L1
+    write-boundary coerce / L3 outbound drop / L4 400-retry) calls this
+    when its branch fires, so production has a queryable trail:
+
+      - Log aggregation (Loki / ELK): grep for ``thinking_signature.layer1``
+        to count occurrences by model / agent / time.
+      - Langfuse traces: filter by attribute
+        ``thinking_signature.layerN`` to see the full conversation that
+        triggered it.
+
+    Safe to call when no tracer is active (span attrs become a no-op).
+    """
+    logger.warning("thinking_signature.%s", layer, extra={"orphan_thinking_event": True, **fields})
+    span = get_current_span()
+    if span is None:
+        return
+    key = f"thinking_signature.{layer}"
+    span.attributes[key] = int(span.attributes.get(key, 0)) + 1
+    for k, v in fields.items():
+        span.attributes[f"{key}.{k}"] = v
+
+
+def _is_thinking_signature_error(exc: BaseException) -> bool:
+    """True iff `exc` is Anthropic's `400 Invalid signature in thinking block`.
+
+    The status-extraction logic duplicates `llm_failover._extract_status_code`
+    by a few lines, but that helper is module-private (pyright forbids the
+    cross-module use). Promoting it to a shared module is a refactor for
+    another PR.
+    """
+    if not isinstance(exc, anthropic.APIStatusError) or exc.status_code != 400:
+        return False
+    blob_lower = (str(getattr(exc, "message", "") or "") + " " + str(exc)).lower()
+    return any(marker in blob_lower for marker in _THINKING_SIGNATURE_ERROR_MARKERS)
+
+
+def _strip_or_raise_on_signature_error(
+    exc: BaseException,
+    params: "ModelCallParams | None",
+    label: str,
+) -> "ModelCallParams":
+    """If `exc` is the Anthropic invalid-signature 400, log + return
+    `params` with all ReasoningBlock signatures stripped (ready for
+    one-shot retry). Otherwise re-raise so unrelated errors propagate.
+
+    Called from inside an `except anthropic.APIStatusError` block of each
+    of the 4 Anthropic call paths (sync × async × stream × non-stream).
+    """
+    if not _is_thinking_signature_error(exc):
+        raise exc
+    assert params is not None, "Layer 4 retry requires a ModelCallParams"
+    record_thinking_signature_event(
+        "layer4_retry",
+        path=label,
+        error_message=str(getattr(exc, "message", "") or "")[:200],
+        run_id=getattr(params.agent_state, "run_id", None) if params.agent_state else None,
+    )
+    return replace(params, messages=_strip_thinking_signatures(params.messages))
+
+
+def _strip_thinking_signatures(messages: list[Message]) -> list[Message]:
+    """Return a shallow-cloned UMP history with every ReasoningBlock's
+    signature cleared to None.
+
+    Used by Layer 4's retry path: after Anthropic rejects a request with
+    "Invalid signature in thinking block", we don't know which block has
+    the bad signature, so we clear them all. The existing serializer
+    (Layer 3) then drops the now-unsigned reasoning blocks via its default
+    branch — no new parameter through the adapter/serializer chain.
+    """
+    from nexau.core.messages import ReasoningBlock
+
+    out: list[Message] = []
+    for msg in messages:
+        new_content: list[Any] = []
+        for block in msg.content:
+            if isinstance(block, ReasoningBlock) and block.signature is not None:
+                new_content.append(block.model_copy(update={"signature": None}))
+            else:
+                new_content.append(block)
+        out.append(msg.model_copy(update={"content": new_content}))
+    return out
 
 
 class StreamIdleTimeoutError(Exception):
@@ -1506,7 +1611,11 @@ def call_llm_with_anthropic_chat_completion(
             return resp
 
     if not stream_requested:
-        response = llm_call()
+        try:
+            response = llm_call()
+        except anthropic.APIStatusError as exc:
+            model_call_params = _strip_or_raise_on_signature_error(exc, model_call_params, "non-stream")
+            response = llm_call()
         return ModelResponse.from_anthropic_message(response)
 
     def llm_stream_call() -> ModelResponse:
@@ -1578,7 +1687,11 @@ def call_llm_with_anthropic_chat_completion(
                 raise wrapped_error from exc
             raise
 
-    return llm_stream_call()
+    try:
+        return llm_stream_call()
+    except anthropic.APIStatusError as exc:
+        model_call_params = _strip_or_raise_on_signature_error(exc, model_call_params, "stream")
+        return llm_stream_call()
 
 
 def call_llm_with_openai_chat_completion(
@@ -2062,39 +2175,49 @@ async def call_llm_with_anthropic_chat_completion_async(
             allow_unsigned_thinking=bool(llm_config and llm_config.allow_unsigned_thinking),
         ).to_vendor_format(model_call_params.messages)
 
-    # 1. 组装参数（与 sync 版完全相同）
-    system_messages, user_messages = _build_anthropic_messages()
-    _apply_cache_control(system_messages, user_messages)
+    def _build_api_kwargs() -> dict[str, Any]:
+        # 1. 组装参数（与 sync 版完全相同）
+        system_messages, user_messages = _build_anthropic_messages()
+        _apply_cache_control(system_messages, user_messages)
 
-    new_kwargs = kwargs.copy()
-    new_kwargs.pop("messages", None)
-    new_kwargs.pop("anthropic_cache_control_ttl", None)
-    api_kwargs: dict[str, Any] = {"system": system_messages, "messages": user_messages, **new_kwargs}
+        new_kwargs = kwargs.copy()
+        new_kwargs.pop("messages", None)
+        new_kwargs.pop("anthropic_cache_control_ttl", None)
+        return {"system": system_messages, "messages": user_messages, **new_kwargs}
 
     if not stream_requested:
         # 2. 非流式路径
-        if should_trace and tracer is not None:
-            trace_ctx = TraceContext(tracer, "Anthropic messages.create (async)", SpanType.LLM, inputs=api_kwargs)
-            with trace_ctx:
-                resp = await client.messages.create(**api_kwargs)
-                trace_ctx.set_outputs(_to_serializable_dict(resp))
-        else:
-            resp = await client.messages.create(**api_kwargs)
+        async def _invoke_non_stream() -> Any:
+            api_kwargs_local = _build_api_kwargs()
+            if should_trace and tracer is not None:
+                trace_ctx = TraceContext(tracer, "Anthropic messages.create (async)", SpanType.LLM, inputs=api_kwargs_local)
+                with trace_ctx:
+                    resp_local = await client.messages.create(**api_kwargs_local)
+                    trace_ctx.set_outputs(_to_serializable_dict(resp_local))
+                    return resp_local
+            return await client.messages.create(**api_kwargs_local)
+
+        try:
+            resp = await _invoke_non_stream()
+        except anthropic.APIStatusError as exc:
+            model_call_params = _strip_or_raise_on_signature_error(exc, model_call_params, "async non-stream")
+            resp = await _invoke_non_stream()
         return ModelResponse.from_anthropic_message(resp)
 
     # 3. 流式路径
-    run_id = _resolve_run_id(model_call_params)
-    emitter = _get_event_emitter(middleware_manager)
-    aggregator = AnthropicEventAggregator(on_event=emitter, run_id=run_id)
-    _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
+    async def _invoke_stream() -> Any:
+        api_kwargs_local = _build_api_kwargs()
+        run_id = _resolve_run_id(model_call_params)
+        emitter = _get_event_emitter(middleware_manager)
+        aggregator = AnthropicEventAggregator(on_event=emitter, run_id=run_id)
+        _shutdown_ev = model_call_params.shutdown_event if model_call_params else None
 
-    try:
         if should_trace and tracer is not None:
-            trace_ctx_s = TraceContext(tracer, "Anthropic messages.stream (async)", SpanType.LLM, inputs=api_kwargs)
+            trace_ctx_s = TraceContext(tracer, "Anthropic messages.stream (async)", SpanType.LLM, inputs=api_kwargs_local)
             with trace_ctx_s:
                 start_time = time.time()
                 first_token_time = None
-                async with client.messages.stream(**api_kwargs) as stream:
+                async with client.messages.stream(**api_kwargs_local) as stream:
                     async for event in stream:
                         if _shutdown_ev is not None and _shutdown_ev.is_set():
                             logger.info("🛑 Shutdown event detected during async Anthropic streaming")
@@ -2105,12 +2228,13 @@ async def call_llm_with_anthropic_chat_completion_async(
                         if processed_event is None:
                             continue
                         aggregator.aggregate(processed_event)
-                message = aggregator.build()
-                trace_ctx_s.set_outputs(_to_serializable_dict(message))
+                msg_local = aggregator.build()
+                trace_ctx_s.set_outputs(_to_serializable_dict(msg_local))
                 if first_token_time is not None:
                     trace_ctx_s.set_attributes({"time_to_first_token_ms": (first_token_time - start_time) * 1000})
+                return msg_local
         else:
-            async with client.messages.stream(**api_kwargs) as stream:
+            async with client.messages.stream(**api_kwargs_local) as stream:
                 async for event in stream:
                     if _shutdown_ev is not None and _shutdown_ev.is_set():
                         logger.info("🛑 Shutdown event detected during async Anthropic streaming")
@@ -2119,7 +2243,14 @@ async def call_llm_with_anthropic_chat_completion_async(
                     if processed_event is None:
                         continue
                     aggregator.aggregate(processed_event)
-            message = aggregator.build()
+            return aggregator.build()
+
+    try:
+        try:
+            message = await _invoke_stream()
+        except anthropic.APIStatusError as exc:
+            model_call_params = _strip_or_raise_on_signature_error(exc, model_call_params, "async stream")
+            message = await _invoke_stream()
     except Exception as exc:
         wrapped_error = _maybe_wrap_stream_idle_timeout(
             exc,
