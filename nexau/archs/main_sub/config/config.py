@@ -1211,7 +1211,7 @@ class AgentConfigBuilder:
         yaml_path = str(_resolve_config_path(yaml_path, base_path))
 
         # Create tool with effective config-level overrides
-        tool = Tool.from_yaml(
+        return Tool.from_yaml(
             str(yaml_path),
             binding,
             as_skill=as_skill,
@@ -1222,11 +1222,3 @@ class AgentConfigBuilder:
             permissions=permissions,
             source_id=source_id,
         )
-        schema_properties_raw: object = tool.input_schema.get("properties", {})
-        schema_properties = cast(dict[str, Any], schema_properties_raw) if isinstance(schema_properties_raw, dict) else {}
-        schema_conflicts = set(extra_kwargs) & set(schema_properties)
-        if schema_conflicts:
-            raise ConfigError(
-                f"Tool '{name}' extra_kwargs conflicts with input_schema keys: {sorted(schema_conflicts)}",
-            )
-        return tool
