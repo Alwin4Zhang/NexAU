@@ -290,7 +290,7 @@ Agent 后续 turn 中接收到 summary 内嵌 hint，调 `Grep "agent_events_mid
 - `nexau/archs/main_sub/execution/middleware/context_compaction/middleware.py` — 接入归档 + hint 注入
 - `nexau/archs/main_sub/execution/middleware/context_compaction/history_archive.py` — 归档读写器
 - `tests/unit/test_history_archive.py` — 测试
-- `examples/test_history_archive_e2e.py` — 真实 LLM e2e 验证脚本
+- `tests/scripts/test_history_archive_e2e.py` — 真实 LLM e2e 验证脚本
 
 ## 测试方案
 
@@ -319,7 +319,7 @@ Agent 后续 turn 中接收到 summary 内嵌 hint，调 `Grep "agent_events_mid
 
 ```bash
 NEXAU_LOG_LEVEL=DEBUG \
-  uv run python examples/test_history_archive_e2e.py
+  uv run python tests/scripts/test_history_archive_e2e.py
 ls $SANDBOX_ROOT/.nexau_history_archive/   # 应只有 transcript.jsonl
 grep -c '"_boundary"' $SANDBOX_ROOT/.nexau_history_archive/transcript.jsonl   # 行数 == 压缩轮数
 ```
