@@ -48,7 +48,33 @@ def test_windows_git_bash_backend_builds_process_group_config() -> None:
 
     assert config.argv == (r"C:\Program Files\Git\bin\bash.exe", "-c", "echo hello")
     assert config.start_new_session is False
-    assert config.creationflags == shell_backend._CREATE_NEW_PROCESS_GROUP
+    assert config.creationflags == shell_backend.windows_background_creationflags()
+
+
+def test_windows_shell_backends_suppress_console_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shell_backend.sys, "platform", "win32")
+    monkeypatch.setattr(shell_backend, "_CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    monkeypatch.setattr(shell_backend, "_CREATE_NO_WINDOW", 0x08000000)
+
+    expected = 0x00000200 | 0x08000000
+
+    assert WindowsGitBashBackend(Path(r"C:\Git\bin\bash.exe")).build_launch_config("echo hello").creationflags == expected
+    assert (
+        WindowsPowerShellBackend(Path(r"C:\Program Files\PowerShell\7\pwsh.exe"), "pwsh")
+        .build_launch_config("Write-Output hello")
+        .creationflags
+        == expected
+    )
+    assert WindowsCmdBackend(Path(r"C:\Windows\System32\cmd.exe")).build_launch_config("echo hello").creationflags == expected
+
+
+def test_windows_no_window_kwargs_are_windows_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shell_backend.sys, "platform", "linux")
+    assert shell_backend.windows_no_window_kwargs() == {}
+
+    monkeypatch.setattr(shell_backend.sys, "platform", "win32")
+    monkeypatch.setattr(shell_backend, "_CREATE_NO_WINDOW", 0x08000000)
+    assert shell_backend.windows_no_window_kwargs() == {"creationflags": 0x08000000}
 
 
 def test_windows_git_bash_backend_formats_native_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,7 +98,7 @@ def test_windows_powershell_backend_builds_explicit_argv() -> None:
         "Write-Output hello",
     )
     assert config.start_new_session is False
-    assert config.creationflags == shell_backend._CREATE_NEW_PROCESS_GROUP
+    assert config.creationflags == shell_backend.windows_background_creationflags()
 
 
 def test_windows_powershell_backend_formats_native_path() -> None:
@@ -103,7 +129,7 @@ def test_windows_cmd_backend_builds_last_resort_argv() -> None:
     config = backend.build_launch_config("echo hello")
 
     assert config.argv == (r"C:\Windows\System32\cmd.exe", "/d", "/s", "/c", "echo hello")
-    assert config.creationflags == shell_backend._CREATE_NEW_PROCESS_GROUP
+    assert config.creationflags == shell_backend.windows_background_creationflags()
     assert backend.format_path_for_shell(r"C:\repo\file.txt") == r"C:\repo\file.txt"
     assert backend.format_executable_for_shell(r'C:\Program Files\App "quoted"\app.exe') == (r'"C:\Program Files\App \"quoted\"\app.exe"')
 
@@ -123,10 +149,18 @@ def test_version_for_windows_shell_handles_cmd_without_subprocess() -> None:
 
 def test_version_for_windows_shell_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     completed = type("Completed", (), {"stdout": "7.4.0\n", "stderr": ""})()
+    captured_kwargs: dict[str, object] = {}
 
-    monkeypatch.setattr(shell_backend.subprocess, "run", lambda *_args, **_kwargs: completed)
+    def fake_run(*_args: object, **kwargs: object) -> object:
+        captured_kwargs.update(kwargs)
+        return completed
+
+    monkeypatch.setattr(shell_backend.sys, "platform", "win32")
+    monkeypatch.setattr(shell_backend, "_CREATE_NO_WINDOW", 0x08000000)
+    monkeypatch.setattr(shell_backend.subprocess, "run", fake_run)
 
     assert shell_backend._version_for_windows_shell(Path("pwsh.exe"), "pwsh") == "7.4.0"
+    assert captured_kwargs["creationflags"] == 0x08000000
 
 
 def test_version_for_windows_shell_returns_none_on_subprocess_error(monkeypatch: pytest.MonkeyPatch) -> None:

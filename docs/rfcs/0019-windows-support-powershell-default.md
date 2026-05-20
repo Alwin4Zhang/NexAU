@@ -35,6 +35,7 @@
 | `shlex.quote()`、heredoc、重定向等 command building 规则是 POSIX 风格 | PowerShell 下参数、路径、可执行文件调用、环境变量和 heredoc 语义不同，继续复用 POSIX quoting 会导致命令失败或安全风险 | 将 quoting / command building 下沉到 shell backend：Unix / Git Bash 使用 POSIX quoting；PowerShell 使用 PowerShell quoting 与 executable invocation；LLM-facing 描述优先引导 PowerShell here-string，多数场景避免 Bash heredoc；运行时仅 best-effort 兼容常见 Bash heredoc 写文件/输出格式，复杂形式明确报错让 agent 重写或切换 Git Bash | 路径含空格、反斜杠、引号时可被正确传入；PowerShell 默认路径不误承诺完整 bash 语义；常见多行文件写入有兼容兜底，复杂 bash-only 语法有清晰错误 |
 | 本地路径策略围绕 Git Bash POSIX 路径 | PowerShell 默认路径不应把 `C:\...` 转成 `/c/...`；Python 文件 API 与 shell 字符串路径格式混用会导致读写失败 | 路径 helper 按 backend 分流：Python 层保留原生路径；PowerShell / `cmd.exe` 使用 Windows 原生路径；Git Bash 使用 `/c/...` 等可消费格式 | `cwd`、临时目录、输出目录、脚本路径在 Python 层和 shell 层边界清晰，不再依赖 `/tmp` 或隐式转换 |
 | LocalSandbox 依赖 POSIX 进程语义 | `killpg()`、`getpgid()`、`SIGTERM` / `SIGKILL`、`start_new_session=True` 在 Windows 不成立或不等价 | 引入 process compat 层，按平台定义启动、后台任务、轮询、超时终止和强制终止策略 | Windows 下长命令可超时结束，后台任务可查询/终止，清理逻辑不依赖 POSIX-only API |
+| Windows GUI 宿主后台子进程闪现控制台窗口 | 桌面应用运行 `search_file_content`、`run_shell_command`、MCP stdio server、`read_visual_file` 外部探测等后台命令时，PowerShell/cmd/rg/ffmpeg 可能短暂弹出控制台窗口 | Windows 本地后台子进程统一追加 `CREATE_NO_WINDOW`；shell backend 保留 `CREATE_NEW_PROCESS_GROUP` 并与 no-window flag 组合；直接 `subprocess.run/check_output` 与 `asyncio.create_subprocess_exec` 路径使用统一 no-window kwargs | `search_file_content`、shell command、visual reader/MCP 等工具链不再闪窗；用户显式打开终端或外部应用的行为不被隐藏 |
 | 内置工具直接拼接 Unix 命令或依赖 Unix 文件管理 | `mkdir`、`ls | sort`、`rm -rf`、bash 风格 `rg` 命令在 PowerShell 默认路径下不可靠 | 优先使用 Python / sandbox 文件 API；必要 shell 命令通过 backend-aware quoting 构建；`rg` / `ffmpeg` 缺失时采用明确 fallback / 降级 | `search_file_content`、`read_visual_file` 在 Windows 默认 PowerShell 路径可用；缺失外部依赖时有可诊断降级 |
 | CI / 文档仍以“Git Bash 必需”为口径 | 文档承诺、测试矩阵和实际产品定位不一致，后续实现容易回退到 Git Bash-only | RFC-0020 与 Windows baseline 改为验证默认 PowerShell backend + 可选 Git Bash backend | required checks 覆盖 PowerShell 默认路径；Git Bash 缺失只在显式 backend / bash-only 场景验证 fail-fast |
 
@@ -155,6 +156,11 @@ Windows Local 执行路径还必须满足：
 - 不得依赖 `shell=True` 的宿主默认 shell 行为
 - 必须显式调用选定 shell backend 的可执行文件；PowerShell 默认路径使用 `pwsh.exe` / `powershell.exe` / `cmd.exe` 的显式 argv，Git Bash 可选路径使用 `[git_bash_path, "-c", command]` 或等效方式
 - 所有 LocalSandbox 命令执行路径都必须统一经过 active shell backend，而不是绕过抽象混用宿主默认 shell
+- Windows GUI 宿主中的后台命令不得短暂创建可见控制台窗口：
+  - `LocalSandbox.execute_shell(...)` 的 Windows shell backend launch config 必须在 `CREATE_NEW_PROCESS_GROUP` 之外追加 `CREATE_NO_WINDOW`，覆盖 `search_file_content`、`run_shell_command`、`read_visual_file` 中的 `rg` / PowerShell / `cmd.exe` / `ffmpeg` 等后台命令路径。
+  - 不经 `execute_shell(...)` 的直接后台 subprocess 路径也必须使用统一 no-window helper，例如 PowerShell backend 版本探测、`llm_friendly` 中的 `wc` / `du` 探测、MCP stdio server 的 `asyncio.create_subprocess_exec(...)`。
+  - `CREATE_NO_WINDOW` 只适用于 NexAU 后台工具与探测子进程；不得用于隐藏用户显式要求打开的终端、IDE、Explorer 或其他外部 GUI 应用。
+  - 非 Windows 平台不得携带 Windows-only creation flags，避免破坏 POSIX `start_new_session` / cleanup 语义。
 
 #### 2. backend-aware 命令预处理契约
 

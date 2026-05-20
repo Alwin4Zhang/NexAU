@@ -36,8 +36,10 @@ from .path_helpers import native_path_to_shell_path
 
 if sys.platform == "win32":
     _CREATE_NEW_PROCESS_GROUP: int = subprocess.CREATE_NEW_PROCESS_GROUP
+    _CREATE_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 else:
     _CREATE_NEW_PROCESS_GROUP = 0
+    _CREATE_NO_WINDOW = 0
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,31 @@ class WindowsShellInstallation:
     kind: WindowsShellKind
     source: str
     version: str | None
+
+
+def windows_no_window_creationflags() -> int:
+    """Return Windows creation flags that suppress console windows.
+
+    Local GUI hosts often execute NexAU tools in the background. Without
+    CREATE_NO_WINDOW, PowerShell/cmd/rg/ffmpeg/MCP subprocesses can briefly
+    flash a console window. Non-Windows platforms do not need extra flags.
+    """
+    if sys.platform != "win32":
+        return 0
+    return _CREATE_NO_WINDOW
+
+
+def windows_background_creationflags() -> int:
+    """Return creation flags for background shell execution on Windows."""
+    if sys.platform != "win32":
+        return 0
+    return _CREATE_NEW_PROCESS_GROUP | windows_no_window_creationflags()
+
+
+def windows_no_window_kwargs() -> dict[str, int]:
+    """Return subprocess kwargs that suppress Windows console windows."""
+    creationflags = windows_no_window_creationflags()
+    return {"creationflags": creationflags} if creationflags else {}
 
 
 class ShellBackend(Protocol):
@@ -104,7 +131,7 @@ class WindowsGitBashBackend:
     def build_launch_config(self, command: str) -> ShellLaunchConfig:
         return ShellLaunchConfig(
             argv=(str(self._bash_path), "-c", command),
-            creationflags=_CREATE_NEW_PROCESS_GROUP,
+            creationflags=windows_background_creationflags(),
             start_new_session=False,
         )
 
@@ -138,7 +165,7 @@ class WindowsPowerShellBackend:
                 "-Command",
                 command,
             ),
-            creationflags=_CREATE_NEW_PROCESS_GROUP,
+            creationflags=windows_background_creationflags(),
             start_new_session=False,
         )
 
@@ -158,7 +185,7 @@ class WindowsCmdBackend:
     def build_launch_config(self, command: str) -> ShellLaunchConfig:
         return ShellLaunchConfig(
             argv=(str(self._executable_path), "/d", "/s", "/c", command),
-            creationflags=_CREATE_NEW_PROCESS_GROUP,
+            creationflags=windows_background_creationflags(),
             start_new_session=False,
         )
 
@@ -192,21 +219,33 @@ def _version_for_windows_shell(executable_path: Path, kind: WindowsShellKind) ->
     if kind == "cmd":
         return None
 
+    command = [
+        str(executable_path),
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$PSVersionTable.PSVersion.ToString()",
+    ]
+    creationflags = windows_no_window_creationflags()
     try:
-        result = subprocess.run(
-            [
-                str(executable_path),
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "$PSVersionTable.PSVersion.ToString()",
-            ],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=5,
-        )
+        if creationflags:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=5,
+                creationflags=creationflags,
+            )
+        else:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=5,
+            )
     except (FileNotFoundError, OSError, subprocess.SubprocessError):
         return None
 

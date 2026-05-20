@@ -13,7 +13,7 @@
   ],
   "affects": "Windows support runtime, local sandbox, CLI entrypoints, shell backends, text asset encoding, agent runner stdio",
   "created": "2026-04-22",
-  "updated": "2026-04-27",
+  "updated": "2026-05-20",
   "requires": [],
   "related": [
     "0020"
@@ -82,6 +82,17 @@
       ],
       "status": "implemented",
       "ref": ""
+    },
+    {
+      "id": "T8",
+      "title": "Windows GUI 后台子进程 no-window 契约",
+      "depends_on": [
+        "T2",
+        "T3",
+        "T5"
+      ],
+      "status": "implemented",
+      "ref": "codex/windows-no-console-subprocess"
     }
   ]
 }

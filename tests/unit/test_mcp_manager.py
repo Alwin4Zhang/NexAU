@@ -24,6 +24,8 @@ Tests cover:
 """
 
 import asyncio
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,6 +36,36 @@ from nexau.archs.tool.builtin.mcp_client import (
     MCPServerConfig,
     MCPTool,
 )
+
+
+class _FakeMCPStdout:
+    def __init__(self) -> None:
+        self._lines = [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode() + b"\n",
+            json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": []}}).encode() + b"\n",
+        ]
+
+    async def readline(self) -> bytes:
+        return self._lines.pop(0)
+
+
+class _FakeMCPStdin:
+    def write(self, _data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        pass
+
+
+class _FakeMCPProcess:
+    def __init__(self) -> None:
+        self.stdin = _FakeMCPStdin()
+        self.stdout = _FakeMCPStdout()
+        self.stderr = object()
+
+
+class DirectMCPSession:
+    pass
 
 
 class TestMCPServerConfig:
@@ -137,6 +169,76 @@ class TestMCPClient:
         result = client.get_all_tools()
 
         assert result == []
+
+    @pytest.mark.anyio
+    async def test_stdio_connect_passes_windows_no_window_kwargs(self):
+        """Stdio MCP server startup should suppress Windows console windows."""
+        captured_kwargs: dict[str, object] = {}
+
+        async def fake_create_subprocess_exec(*_args: object, **kwargs: object) -> _FakeMCPProcess:
+            captured_kwargs.update(kwargs)
+            return _FakeMCPProcess()
+
+        client = MCPClient()
+        client.add_server(
+            MCPServerConfig(
+                name="stdio",
+                type="stdio",
+                command="server.exe",
+                args=["--stdio"],
+                timeout=1,
+            )
+        )
+
+        with (
+            patch(
+                "nexau.archs.tool.builtin.mcp_client.windows_no_window_creationflags",
+                return_value=0x08000000,
+            ),
+            patch(
+                "nexau.archs.tool.builtin.mcp_client.asyncio.create_subprocess_exec",
+                side_effect=fake_create_subprocess_exec,
+            ),
+        ):
+            assert await client.connect_to_server("stdio") is True
+
+        assert captured_kwargs["creationflags"] == 0x08000000
+
+    @pytest.mark.anyio
+    async def test_thread_local_stdio_session_passes_windows_no_window_kwargs(self):
+        """Per-thread stdio MCP sessions should use the same no-window policy."""
+        captured_kwargs: dict[str, object] = {}
+
+        async def fake_create_subprocess_exec(*_args: object, **kwargs: object) -> _FakeMCPProcess:
+            captured_kwargs.update(kwargs)
+            return _FakeMCPProcess()
+
+        tool = MCPTool(
+            SimpleNamespace(name="echo", description="", inputSchema={}),
+            DirectMCPSession(),
+            MCPServerConfig(
+                name="stdio",
+                type="stdio",
+                command="server.exe",
+                args=["--stdio"],
+                timeout=1,
+            ),
+        )
+
+        with (
+            patch(
+                "nexau.archs.tool.builtin.mcp_client.windows_no_window_creationflags",
+                return_value=0x08000000,
+            ),
+            patch(
+                "nexau.archs.tool.builtin.mcp_client.asyncio.create_subprocess_exec",
+                side_effect=fake_create_subprocess_exec,
+            ),
+        ):
+            session = await tool._get_thread_local_session()
+
+        assert session is not None
+        assert captured_kwargs["creationflags"] == 0x08000000
 
 
 class TestMCPManager:

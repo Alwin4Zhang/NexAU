@@ -29,6 +29,8 @@ from typing import Annotated, Any, cast
 import pandas as pd
 import yaml
 
+from nexau.archs.platform.shell_backend import windows_no_window_creationflags
+
 PD_ANY = cast(Any, pd)
 
 LLM_FRIENDLY_MAX_DEPTH = int(os.getenv("LLM_FRIENDLY_MAX_DEPTH", 5))
@@ -47,6 +49,13 @@ LLM_FRIENDLY_MAX_STRING_LENGTH = int(
     )
 )
 LLM_FRIENDLY_MAX_SAMPLE_ROWS = int(os.getenv("LLM_FRIENDLY_MAX_SAMPLE_ROWS", 10))
+
+
+def _check_output_no_window(args: list[str]) -> bytes:
+    creationflags = windows_no_window_creationflags()
+    if creationflags:
+        return subprocess.check_output(args, creationflags=creationflags)
+    return subprocess.check_output(args)
 
 
 class ContentWithCustomLength:
@@ -263,11 +272,7 @@ class FileFormatHandler:
         try:
             # Try using wc command first (faster for large files)
             return int(
-                subprocess.check_output(
-                    ["wc", "-l", path],
-                )
-                .decode("utf-8")
-                .split()[0],
+                _check_output_no_window(["wc", "-l", path]).decode("utf-8").split()[0],
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
             # Fallback to Python method if wc command fails
@@ -287,11 +292,7 @@ class FileFormatHandler:
         try:
             # Try using du command first (may be more accurate for some file systems)
             return int(
-                subprocess.check_output(
-                    ["du", "-b", path],
-                )
-                .decode("utf-8")
-                .split()[0],
+                _check_output_no_window(["du", "-b", path]).decode("utf-8").split()[0],
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
             # Fallback to Python method for cross-platform compatibility

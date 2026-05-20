@@ -16,6 +16,7 @@
 
 import asyncio
 import logging
+import subprocess
 from asyncio.subprocess import Process
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -26,6 +27,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.types import Tool as MCPToolType
 
 from nexau.archs.permissions.helpers import check_mcp_permission
+from nexau.archs.platform.shell_backend import windows_no_window_creationflags
 
 from ..tool import Tool
 
@@ -36,6 +38,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 JSONDict = dict[str, Any]
+
+
+async def _create_stdio_subprocess(
+    command: str,
+    args: Sequence[str],
+    env: dict[str, str],
+) -> Process:
+    creationflags = windows_no_window_creationflags()
+    if creationflags:
+        return await asyncio.create_subprocess_exec(
+            command,
+            *args,
+            limit=1024 * 128,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=creationflags,
+        )
+    return await asyncio.create_subprocess_exec(
+        command,
+        *args,
+        limit=1024 * 128,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
 
 class _HTTPSessionParams(TypedDict):
@@ -738,17 +768,7 @@ class MCPTool(Tool):
                         self._request_id = 0
 
                     async def initialize(self) -> "DirectMCPSession":
-                        import subprocess
-
-                        self.process = await asyncio.create_subprocess_exec(
-                            self.command,
-                            *self.args,
-                            limit=1024 * 128,  # set a large buffer size
-                            env=self.env,
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                        )
+                        self.process = await _create_stdio_subprocess(self.command, self.args, self.env)
 
                         if not self.process.stdout or not self.process.stdin:
                             raise RuntimeError("Failed to get process streams")
@@ -1099,17 +1119,7 @@ class MCPClient:
                         self._request_id = 0
 
                     async def initialize(self) -> "DirectMCPSession":
-                        import subprocess
-
-                        self.process = await asyncio.create_subprocess_exec(
-                            self.command,
-                            *self.args,
-                            limit=1024 * 128,  # set a large buffer size
-                            env=self.env,
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                        )
+                        self.process = await _create_stdio_subprocess(self.command, self.args, self.env)
 
                         if not self.process.stdout or not self.process.stdin:
                             raise RuntimeError("Failed to get process streams")
