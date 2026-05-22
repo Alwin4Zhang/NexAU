@@ -34,8 +34,24 @@ def temp_workdir():
 
 
 @pytest.fixture
-def sandbox(temp_workdir):
-    return LocalSandbox(sandbox_id="test", work_dir=temp_workdir)
+def temp_sandbox_tmp():
+    d = tempfile.mkdtemp()
+    yield d
+    shutil.rmtree(d, ignore_errors=True)
+
+
+class _TestLocalSandbox(LocalSandbox):
+    _test_temp_dir: str
+
+    def get_temp_dir(self) -> str:
+        return self._test_temp_dir
+
+
+@pytest.fixture
+def sandbox(temp_workdir, temp_sandbox_tmp):
+    sandbox = _TestLocalSandbox(sandbox_id="test", work_dir=temp_workdir)
+    sandbox._test_temp_dir = temp_sandbox_tmp
+    return sandbox
 
 
 class _FakeAgentState:
@@ -76,6 +92,10 @@ def _read_transcript_lines(archive_dir: Path) -> list[str]:
     return [ln for ln in transcript.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
+def _archive_path(writer: HistoryArchiveWriter) -> Path:
+    return Path(writer.archive_dir)
+
+
 def _split_lines(lines: list[str]) -> tuple[list[Message], list[dict[str, Any]]]:
     """Split transcript lines into (messages, boundaries)."""
     messages: list[Message] = []
@@ -112,7 +132,10 @@ class TestFromSandbox:
         agent_state = _FakeAgentState(sandbox=sandbox)
         writer = HistoryArchiveWriter.from_sandbox(agent_state=agent_state)
         assert writer is not None
-        assert Path(temp_workdir, ARCHIVE_SUBDIR).is_dir()
+        archive_dir = _archive_path(writer)
+        assert archive_dir.is_dir()
+        assert archive_dir.is_relative_to(Path(sandbox.get_temp_dir()))
+        assert not Path(temp_workdir, ARCHIVE_SUBDIR).exists()
         assert writer.total_rounds == 0
         assert writer.total_archived == 0
 
@@ -146,7 +169,7 @@ class TestSingleRound:
         assert record.round == 1
         assert record.removed_message_count == 3
 
-        archive_dir = Path(temp_workdir, ARCHIVE_SUBDIR)
+        archive_dir = _archive_path(writer)
         transcript_path = archive_dir / TRANSCRIPT_FILENAME
         assert transcript_path.is_file()
         # 没有其他文件 (单文件设计)
@@ -183,7 +206,7 @@ class TestSingleRound:
         )
         assert record is None
         assert writer.total_rounds == 0
-        archive_dir = Path(temp_workdir, ARCHIVE_SUBDIR)
+        archive_dir = _archive_path(writer)
         assert not (archive_dir / TRANSCRIPT_FILENAME).exists()
 
 
@@ -211,7 +234,7 @@ class TestMultipleRounds:
             assert record is not None
             assert record.round == i
 
-        lines = _read_transcript_lines(Path(temp_workdir, ARCHIVE_SUBDIR))
+        lines = _read_transcript_lines(_archive_path(writer))
         messages, boundaries = _split_lines(lines)
         assert len(boundaries) == 3
         assert [b["round"] for b in boundaries] == [1, 2, 3]
@@ -234,7 +257,7 @@ class TestMultipleRounds:
             run_id="r1",
             agent_id="a",
         )
-        transcript = Path(temp_workdir, ARCHIVE_SUBDIR, TRANSCRIPT_FILENAME)
+        transcript = _archive_path(writer) / TRANSCRIPT_FILENAME
         prefix = transcript.read_bytes()
 
         time.sleep(0.01)
@@ -291,7 +314,7 @@ class TestResumeAcrossInstances:
         assert record is not None
         assert record.round == 2
 
-        lines = _read_transcript_lines(Path(temp_workdir, ARCHIVE_SUBDIR))
+        lines = _read_transcript_lines(_archive_path(w2))
         _, boundaries = _split_lines(lines)
         assert [b["round"] for b in boundaries] == [1, 2]
 
@@ -390,13 +413,17 @@ class TestPreview:
 
 class TestArchiveHint:
     def test_hint_mentions_path_and_search_tools(self):
+        archive_dir = f"/tmp/{ARCHIVE_SUBDIR}/session"
+        transcript_path = f"{archive_dir}/{TRANSCRIPT_FILENAME}"
         text = build_archive_hint(
             total_archived=42,
             total_rounds=3,
             latest_round=3,
+            archive_dir=archive_dir,
+            transcript_path=transcript_path,
         )
-        assert ARCHIVE_SUBDIR in text  # 路径走常量, 不再可配
-        assert TRANSCRIPT_FILENAME in text
+        assert archive_dir in text
+        assert transcript_path in text
         assert "search_file_content" in text
         assert "read_file" in text
         assert "42" in text
@@ -486,7 +513,9 @@ class TestMiddlewareArchiveIntegration:
         )
 
         # transcript.jsonl 单文件
-        arch_dir = Path(temp_workdir, ARCHIVE_SUBDIR)
+        writer = archive_middleware._archive_writer
+        assert writer is not None
+        arch_dir = _archive_path(writer)
         transcript = arch_dir / TRANSCRIPT_FILENAME
         assert transcript.is_file()
         assert {p.name for p in arch_dir.iterdir()} == {TRANSCRIPT_FILENAME}
@@ -502,6 +531,8 @@ class TestMiddlewareArchiveIntegration:
         all_text = " ".join(b.text for b in summary_after.content if isinstance(b, TextBlock))
         assert ".nexau_history_archive" in all_text
         assert TRANSCRIPT_FILENAME in all_text
+        assert str(arch_dir) in all_text
+        assert not Path(temp_workdir, ARCHIVE_SUBDIR).exists()
 
         # 多数 LLM provider 把同一消息的多个 TextBlock 拼成单字符串而不加分隔。
         # hint 必须是独立 TextBlock 且自带 ``\n\n`` 前缀, 否则在 prompt / Langfuse
@@ -562,6 +593,42 @@ class TestMiddlewareArchiveIntegration:
         text = last.content[0].text  # type: ignore[union-attr]
         assert ".nexau_history_archive" in text
         assert TRANSCRIPT_FILENAME in text
+        writer = archive_middleware._archive_writer
+        assert writer is not None
+        assert writer.archive_dir in text
+
+    def test_reinjecting_archive_hint_replaces_stale_hint(self, temp_workdir, sandbox, archive_middleware):
+        agent_state = _FakeAgentState(sandbox=sandbox)
+
+        m1 = _msg(Role.USER, "round 1 lost")
+        kept = _summary_msg("compressed summary")
+        first = archive_middleware._maybe_archive_compaction(
+            agent_state=agent_state,
+            messages_before=[m1, kept],
+            messages_after=[kept],
+            tokens_before=100,
+            tokens_after=10,
+            trigger_reason="t",
+            strategy_name="S",
+        )
+
+        m2 = _msg(Role.USER, "round 2 lost")
+        second = archive_middleware._maybe_archive_compaction(
+            agent_state=agent_state,
+            messages_before=[first[0], m2],
+            messages_after=[first[0]],
+            tokens_before=100,
+            tokens_after=10,
+            trigger_reason="t",
+            strategy_name="S",
+        )
+
+        summary_after = second[0]
+        text = "\n".join(b.text for b in summary_after.content if isinstance(b, TextBlock))
+        assert text.count("📁 [Archive]") == 1
+        assert "2 earlier message(s)" in text
+        assert "latest: round 2" in text
+        assert "1 earlier message(s)" not in text
 
     def test_multiple_rounds_append_to_same_file(self, temp_workdir, sandbox, archive_middleware):
         agent_state = _FakeAgentState(sandbox=sandbox)
@@ -591,7 +658,9 @@ class TestMiddlewareArchiveIntegration:
             strategy_name="S",
         )
 
-        arch_dir = Path(temp_workdir, ARCHIVE_SUBDIR)
+        writer = archive_middleware._archive_writer
+        assert writer is not None
+        arch_dir = _archive_path(writer)
         # 仍然只有一个 transcript.jsonl
         assert {p.name for p in arch_dir.iterdir()} == {TRANSCRIPT_FILENAME}
 
@@ -636,10 +705,10 @@ class TestImageBlockRoundTrip:
         assert record.extracted_images == 0  # URL 图片不外置
 
         # 没有 images/ 目录被创建 (因为 needs_processing=False)
-        assert not (Path(temp_workdir, ARCHIVE_SUBDIR, IMAGES_SUBDIR)).exists()
+        assert not (_archive_path(writer) / IMAGES_SUBDIR).exists()
 
         # 反序列化回来 URL 完全一致
-        lines = _read_transcript_lines(Path(temp_workdir, ARCHIVE_SUBDIR))
+        lines = _read_transcript_lines(_archive_path(writer))
         messages, _ = _split_lines(lines)
         assert len(messages) == 1
         restored_blocks = messages[0].content
@@ -675,7 +744,7 @@ class TestImageBlockRoundTrip:
         assert record.extracted_images == 1
 
         # images/ 目录已创建, 含一个 .png
-        images_dir = Path(temp_workdir, ARCHIVE_SUBDIR, IMAGES_SUBDIR)
+        images_dir = _archive_path(writer) / IMAGES_SUBDIR
         assert images_dir.is_dir()
         png_files = list(images_dir.glob("*.png"))
         assert len(png_files) == 1
@@ -685,7 +754,7 @@ class TestImageBlockRoundTrip:
         assert png_files[0].read_bytes() == png_bytes
 
         # transcript.jsonl 里 base64 字段清空, url 改为 file: 引用
-        lines = _read_transcript_lines(Path(temp_workdir, ARCHIVE_SUBDIR))
+        lines = _read_transcript_lines(_archive_path(writer))
         messages, _ = _split_lines(lines)
         img_block = next(b for b in messages[0].content if isinstance(b, ImageBlock))
         assert img_block.base64 is None
@@ -695,7 +764,7 @@ class TestImageBlockRoundTrip:
         assert img_block.mime_type == "image/png"
 
         # transcript 文件本身不再含原始 base64 大块 (体积控制核心目的)
-        raw = (Path(temp_workdir, ARCHIVE_SUBDIR) / TRANSCRIPT_FILENAME).read_text()
+        raw = (_archive_path(writer) / TRANSCRIPT_FILENAME).read_text()
         assert b64_str not in raw
 
     def test_mixed_blocks_preserve_order(self, temp_workdir, sandbox):
@@ -729,7 +798,7 @@ class TestImageBlockRoundTrip:
         assert record.extracted_images == 1  # 只有 b64 那个被外置
 
         # round-trip
-        lines = _read_transcript_lines(Path(temp_workdir, ARCHIVE_SUBDIR))
+        lines = _read_transcript_lines(_archive_path(writer))
         messages, _ = _split_lines(lines)
         blocks = messages[0].content
         assert len(blocks) == 4
@@ -769,7 +838,7 @@ class TestImageBlockRoundTrip:
         assert record is not None
         assert record.extracted_images == 2
 
-        images_dir = Path(temp_workdir, ARCHIVE_SUBDIR, IMAGES_SUBDIR)
+        images_dir = _archive_path(writer) / IMAGES_SUBDIR
         names = sorted(p.name for p in images_dir.iterdir())
         assert names == [f"{msg.id}-0.png", f"{msg.id}-2.jpg"]
 
@@ -797,7 +866,7 @@ class TestImageBlockRoundTrip:
         assert record is not None
         assert record.extracted_images == 1
 
-        files = list(Path(temp_workdir, ARCHIVE_SUBDIR, IMAGES_SUBDIR).iterdir())
+        files = list((_archive_path(writer) / IMAGES_SUBDIR).iterdir())
         assert len(files) == 1
         assert files[0].name.endswith(".bin")  # 未知 mime → .bin
 
@@ -818,7 +887,7 @@ class TestImageBlockRoundTrip:
         )
         assert record is not None
         assert record.extracted_images == 0
-        assert not Path(temp_workdir, ARCHIVE_SUBDIR, IMAGES_SUBDIR).exists()
+        assert not (_archive_path(writer) / IMAGES_SUBDIR).exists()
 
     def test_b64_image_nested_in_tool_result_externalized(self, temp_workdir, sandbox):
         """ImageBlock 嵌套在 ToolResultBlock.content 里 (multimodal 工具返回图)
@@ -860,14 +929,14 @@ class TestImageBlockRoundTrip:
         assert record.extracted_images == 1
 
         # 嵌套图片用 {msg_id}-{outer_idx}-{inner_idx}.{ext} 命名 (避免与顶层冲突)
-        images_dir = Path(temp_workdir, ARCHIVE_SUBDIR, IMAGES_SUBDIR)
+        images_dir = _archive_path(writer) / IMAGES_SUBDIR
         files = sorted(images_dir.iterdir())
         assert len(files) == 1
         assert files[0].name == f"{tool_msg.id}-0-1.png"  # outer block idx=0, inner image idx=1
         assert files[0].read_bytes() == png_bytes
 
         # transcript 里 ToolResultBlock 内的 ImageBlock 已被换成 file: ref
-        lines = _read_transcript_lines(Path(temp_workdir, ARCHIVE_SUBDIR))
+        lines = _read_transcript_lines(_archive_path(writer))
         messages, _ = _split_lines(lines)
         tool_block = messages[0].content[0]
         assert isinstance(tool_block, ToolResultBlock)
@@ -878,7 +947,7 @@ class TestImageBlockRoundTrip:
         assert nested_img.url.startswith(ARCHIVED_IMAGE_URL_PREFIX)
 
         # 原 base64 不在 transcript 文件
-        raw = (Path(temp_workdir, ARCHIVE_SUBDIR) / TRANSCRIPT_FILENAME).read_text()
+        raw = (_archive_path(writer) / TRANSCRIPT_FILENAME).read_text()
         assert b64_str not in raw
 
     def test_original_messages_not_mutated(self, temp_workdir, sandbox):

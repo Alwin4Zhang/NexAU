@@ -21,7 +21,7 @@ RFC-0021: 上下文压缩时归档历史消息到 sandbox
 
 设计要点：
 
-- **单文件 append-only**: ``{sandbox}/.nexau_history_archive/transcript.jsonl``
+- **单文件 append-only**: ``{sandbox_tmp}/.nexau_history_archive/<namespace>/transcript.jsonl``
 - **一行一记录**, 两种类型:
     - 序列化 ``Message`` (含 id/role/content/...)
     - boundary 元数据: ``{"_boundary": {round, compacted_at, ...}}``
@@ -35,11 +35,12 @@ RFC-0021: 上下文压缩时归档历史消息到 sandbox
 from __future__ import annotations
 
 import base64 as _b64
+import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, cast
 
 from nexau.archs.sandbox.base_sandbox import BaseSandbox, SandboxStatus
@@ -48,7 +49,7 @@ from nexau.core.messages import ImageBlock, Message, Role, TextBlock, ToolResult
 logger = logging.getLogger(__name__)
 
 ARCHIVE_SUBDIR = ".nexau_history_archive"
-"""sandbox 根目录下的归档目录名 (RFC-0021)。
+"""sandbox 临时目录下的归档目录名 (RFC-0021)。
 
 写死为常量而不暴露成 config: 避免用户传 ``"../foo"`` 之类的路径穿越输入,
 且默认值就是设计上的唯一选择, 没有真实 use case 需要改名。
@@ -59,6 +60,7 @@ IMAGES_SUBDIR = "images"
 ARCHIVED_IMAGE_URL_PREFIX = "file:"
 BOUNDARY_KEY = "_boundary"
 PREVIEW_MAX_CHARS = 300
+_SAFE_ARCHIVE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 # 常见 mime → 后缀; 未知用 .bin
 _MIME_EXT: dict[str, str] = {
@@ -75,6 +77,44 @@ _MIME_EXT: dict[str, str] = {
 
 def _ext_from_mime(mime: str) -> str:
     return _MIME_EXT.get(mime.lower(), "bin")
+
+
+def _safe_archive_component(value: Any) -> str:
+    """Return a filesystem-safe, human-readable namespace component."""
+    if value is None:
+        return ""
+    safe = _SAFE_ARCHIVE_COMPONENT_RE.sub("_", str(value)).strip("._-")
+    return safe[:64]
+
+
+def _archive_namespace(*, agent_state: Any, sandbox: BaseSandbox) -> str:
+    """Build a stable per-agent namespace for temp history archives.
+
+    ``sandbox_id`` is often absent for local sandboxes, and multiple agents may
+    share the same work_dir, so the namespace combines a readable label with a
+    short hash of the sandbox/agent identity.
+    """
+    agent_id = agent_state.agent_id if hasattr(agent_state, "agent_id") else None
+    sandbox_id = sandbox.sandbox_id
+    work_dir = str(sandbox.work_dir) if sandbox.work_dir else ""
+    seed = "\0".join(
+        [
+            sandbox.__class__.__name__,
+            str(agent_id or ""),
+            str(sandbox_id or ""),
+            work_dir,
+        ]
+    )
+    digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:12]
+    label = "sandbox"
+    for raw_label in (agent_id, sandbox_id):
+        if raw_label is None:
+            continue
+        safe_label = _safe_archive_component(raw_label)
+        if safe_label:
+            label = safe_label
+            break
+    return f"{label}-{digest}"
 
 
 @dataclass(frozen=True)
@@ -135,7 +175,7 @@ class HistoryArchiveWriter:
     ) -> None:
         self._sandbox: BaseSandbox = sandbox
         self._archive_dir = archive_dir
-        self._transcript_path = str(Path(archive_dir) / TRANSCRIPT_FILENAME)
+        self._transcript_path = sandbox.join_path(archive_dir, TRANSCRIPT_FILENAME)
         self._next_round = next_round
         self._total_archived = total_archived
 
@@ -147,10 +187,11 @@ class HistoryArchiveWriter:
     ) -> HistoryArchiveWriter | None:
         """从 agent_state 构造 writer; sandbox 不可用时静默返回 None。
 
-        归档子目录固定为 ``ARCHIVE_SUBDIR`` (``.nexau_history_archive``), 不暴露成
-        config — 避免用户输入路径穿越; 默认值是设计上的唯一选择。
+        归档子目录固定在 sandbox 临时目录下的 ``ARCHIVE_SUBDIR``
+        (``.nexau_history_archive``), 不暴露成 config — 避免用户输入路径穿越;
+        默认值是设计上的唯一选择。
 
-        try 边界故意收紧: 只裹 sandbox 交互 (get_sandbox / work_dir / create_directory),
+        try 边界故意收紧: 只裹 sandbox 交互 (get_sandbox / get_temp_dir / create_directory),
         把"sandbox 不可用"和"内部 bug"分开。``_scan_transcript`` 自己有 try, 信它。
         """
         if agent_state is None:
@@ -165,11 +206,15 @@ class HistoryArchiveWriter:
             if not isinstance(sandbox, BaseSandbox):
                 logger.debug("[HistoryArchiveWriter] Sandbox unavailable; skip archiving.")
                 return None
-            work_dir = str(sandbox.work_dir) if sandbox.work_dir else ""
-            if not work_dir:
-                logger.debug("[HistoryArchiveWriter] Empty sandbox.work_dir; skip archiving.")
+            temp_dir = str(sandbox.get_temp_dir())
+            if not temp_dir:
+                logger.debug("[HistoryArchiveWriter] Empty sandbox temp_dir; skip archiving.")
                 return None
-            archive_dir = str(Path(work_dir) / ARCHIVE_SUBDIR)
+            archive_dir = sandbox.join_path(
+                temp_dir,
+                ARCHIVE_SUBDIR,
+                _archive_namespace(agent_state=agent_state, sandbox=sandbox),
+            )
             sandbox.create_directory(archive_dir, parents=True)
         except Exception as exc:
             logger.warning("[HistoryArchiveWriter] sandbox setup failed: %s", exc)
@@ -192,7 +237,7 @@ class HistoryArchiveWriter:
     @staticmethod
     def _scan_transcript(sandbox: BaseSandbox, archive_dir: str) -> tuple[int, int]:
         """扫现有 transcript.jsonl, 返回 (next_round, total_archived)。"""
-        path = str(Path(archive_dir) / TRANSCRIPT_FILENAME)
+        path = sandbox.join_path(archive_dir, TRANSCRIPT_FILENAME)
         try:
             if not sandbox.file_exists(path):
                 return 1, 0
@@ -359,7 +404,7 @@ class HistoryArchiveWriter:
         if not needs_processing:
             return removed, 0
 
-        images_dir_abs = str(Path(self._archive_dir) / IMAGES_SUBDIR)
+        images_dir_abs = self._sandbox.join_path(self._archive_dir, IMAGES_SUBDIR)
         try:
             self._sandbox.create_directory(images_dir_abs, parents=True)
         except Exception as exc:
@@ -374,7 +419,7 @@ class HistoryArchiveWriter:
             nonlocal extracted
             ext = _ext_from_mime(img.mime_type)
             rel = f"{IMAGES_SUBDIR}/{msg_id}-{path_label}.{ext}"
-            abs_path = str(Path(self._archive_dir) / rel)
+            abs_path = self._sandbox.join_path(self._archive_dir, rel)
             try:
                 img_bytes = _b64.b64decode(img.base64 or "")
                 self._sandbox.write_file(
@@ -469,11 +514,13 @@ def build_archive_hint(
     total_archived: int,
     total_rounds: int,
     latest_round: int,
+    archive_dir: str,
+    transcript_path: str,
 ) -> str:
     """RFC-0021: 构造归档路径提示文本 (不带前后空白)。
 
     告诉 agent 单文件 transcript.jsonl 在哪里, 以及如何用 search_file_content / read_file 召回。
-    路径走常量 ``ARCHIVE_SUBDIR``。
+    调用方必须传入同一 writer 产出的实际 sandbox 临时目录路径和 transcript 路径。
 
     **返回的 hint 不带任何前后空白** —— 由调用方决定怎么分隔。新 TextBlock 是天然
     边界, 不需要 ``\\n\\n`` 前缀; 如果调用方要拼到现有文本末尾, 自己加。
@@ -481,9 +528,9 @@ def build_archive_hint(
     return (
         f"📁 [Archive] {total_archived} earlier message(s) archived across "
         f"{total_rounds} compaction round(s) (latest: round {latest_round}).\n"
-        f"To recall earlier conversation, use your file tools on "
-        f"`{ARCHIVE_SUBDIR}/{TRANSCRIPT_FILENAME}`:\n"
-        f"  • `search_file_content` to grep for keywords (each matched line is a serialized Message)\n"
-        f"  • `read_file` for full chronological view\n"
+        f"To recall earlier conversation, use your file tools on `{transcript_path}`:\n"
+        f"  • `search_file_content` with dir_path `{archive_dir}` to grep for keywords "
+        f"(each matched line is a serialized Message)\n"
+        f"  • `read_file` on `{transcript_path}` for full chronological view\n"
         f'  • Boundary lines `{{"{BOUNDARY_KEY}": ...}}` mark each compaction round'
     )

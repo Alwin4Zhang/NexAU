@@ -6,7 +6,7 @@
   - SessionManager + InMemoryDatabaseEngine 让多次 agent.run() 共享历史
   - 每次 agent.run() = 1 个 USER iteration
   - llm_summary 策略 + keep_iterations=2: 第 3 个 turn 起就会压缩前面的轮次
-  - 最后一轮要求 agent 回忆早期细节, 期望它去 .nexau_history_archive/ 找
+  - 最后一轮要求 agent 回忆早期细节, 期望它按压缩 hint 去临时归档目录找
 
 运行:
     cd /Users/yiran/Projects/nexau-compact-save-history
@@ -70,11 +70,9 @@ def main() -> int:
     project_root = Path(__file__).parent.parent.parent
 
     # 0. sandbox.work_dir 用独立 tempdir 隔离 (不再借用项目根目录).
-    #    这样: (a) 归档不污染项目树; (b) ripgrep 不会被项目 .gitignore 屏蔽归档目录;
-    #    (c) 跑完自动清理。绝对路径 read_file 仍能读项目源码。
+    #    归档本身写到 sandbox temp_dir；这里仍隔离工作目录以避免工具输出污染项目树。
     sandbox_dir = Path(tempfile.mkdtemp(prefix="rfc0021-e2e-"))
     os.environ["SANDBOX_WORK_DIR"] = str(sandbox_dir)
-    archive_dir = sandbox_dir / ".nexau_history_archive"
 
     # 1. 加载 code_agent base config, flatten
     code_agent_dir = project_root / "examples" / "code_agent"
@@ -256,7 +254,7 @@ def main() -> int:
             "Final cross-task recall task. You worked on Task A (RFC drift audit), Task B (error "
             "recovery), and Task C (strategy decision tree). Some early turns are now outside your "
             "active context due to compaction. "
-            "**Use search_file_content (grep) on `.nexau_history_archive/transcript.jsonl`** —— each "
+            "**Use search_file_content (grep) on the archive directory from the compaction hint** —— each "
             'line is either a serialized Message JSON or a boundary record `{"_boundary": ...}` —— '
             "to recover three specific facts: "
             "(1) the RFC promise(s) that A3 marked as 'drift candidates'; "
@@ -296,6 +294,11 @@ def main() -> int:
             break
 
     # 5. 检查归档
+    archive_writer = getattr(compaction_mw, "_archive_writer", None)
+    if archive_writer is None:
+        print("\n✗ archive writer was not initialized — no compaction archive can be inspected", file=sys.stderr)
+        return 1
+    archive_dir = Path(archive_writer.archive_dir)
     print("\n" + "=" * 70)
     print("RFC-0021 Archive Inspection")
     print("=" * 70)
@@ -305,8 +308,8 @@ def main() -> int:
     print(f"Tool calls:         {_event_counter['tool_call']}")
 
     if not archive_dir.exists():
-        print("\n⚠️  归档目录未创建 — 没触发实际移除")
-        return 0
+        print("\n✗ 归档目录未创建 — 没触发实际移除", file=sys.stderr)
+        return 1
 
     files = sorted(archive_dir.iterdir())
     print(f"\nFiles ({len(files)}):")
@@ -316,8 +319,8 @@ def main() -> int:
     # RFC-0021 单文件: transcript.jsonl 内每行是 Message JSON 或 boundary 记录
     transcript_path = archive_dir / "transcript.jsonl"
     if not transcript_path.exists():
-        print("\n⚠️  transcript.jsonl 不存在 — 没触发实际压缩或归档关闭")
-        return 0
+        print("\n✗ transcript.jsonl 不存在 — 没触发实际压缩或归档关闭", file=sys.stderr)
+        return 1
 
     boundaries: list[dict[str, Any]] = []
     archived_msg_lines: list[str] = []
@@ -417,7 +420,7 @@ def main() -> int:
             ("C2", "auto-deprecation aliases"),
             ("C3", "trigger_strategies/token_threshold.py"),
             ("C4-DECISION-TREE", "Q1: are user messages critical to preserve?"),
-            ("C5-RECALL", "Use search_file_content (grep) on `.nexau_history_archive/transcript.jsonl`"),
+            ("C5-RECALL", "Use search_file_content (grep) on the archive directory from the compaction hint"),
         ]
         summary_text = "\n\n".join(m.get_text_content() for m in summary_msgs)
         print(f"Summary text length: {len(summary_text)} chars")

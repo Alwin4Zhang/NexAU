@@ -66,8 +66,8 @@ class CompactionConfig(BaseModel):
     save_history: bool = True
     """开启历史消息文件归档（Opt-out: 启用压缩即归档）。
 
-    归档目录位置固定为 ``{sandbox.work_dir}/.nexau_history_archive/``,
-    不暴露成 config —— 避免用户输入路径穿越, 默认值就是设计上的唯一选择。
+    归档目录位置固定为 ``{sandbox.get_temp_dir()}/.nexau_history_archive/<namespace>/``,
+    不写入当前工作目录, 也不暴露成 config —— 避免用户输入路径穿越。
 
     启用归档时, summary 末尾会自动注入"如何用 search_file_content / read_file
     召回"的提示文本, 让 agent 知道归档存在并能使用 —— 这是归档的关键价值,

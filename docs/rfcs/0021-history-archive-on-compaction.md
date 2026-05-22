@@ -51,7 +51,7 @@ NexAU 已有的 `AgentRunActionModel` 事件溯源虽然在 DB 里保留了 APPE
         ├─→ removed = messages_before − messages_after  (按 message_id 差集，保留原序)
         │
         ├─→ HistoryArchiveWriter.write_round(removed, ...)
-        │     └─ append 到 {sandbox}/.nexau_history_archive/transcript.jsonl
+        │     └─ append 到 {sandbox_tmp}/.nexau_history_archive/<namespace>/transcript.jsonl
         │           ├─ N 行: 每行一条原始 Message JSON
         │           └─ 1 行: {"_boundary": {round, compacted_at, ...}}
         │
@@ -62,10 +62,10 @@ NexAU 已有的 `AgentRunActionModel` 事件溯源虽然在 DB 里保留了 APPE
 
 #### 存储位置
 
-写入当前 agent 的 sandbox 根目录下的 `.nexau_history_archive/transcript.jsonl`。Sandbox 路径通过 `nexau.archs.sandbox.get_sandbox(agent_state)` 获得（与 `save_memory.py` 一致）。
+写入当前 agent 的 sandbox 临时目录下的 `.nexau_history_archive/<namespace>/transcript.jsonl`。Sandbox 临时目录通过 `sandbox.get_temp_dir()` 获得，避免归档文件污染当前工作目录。
 
 ```
-{sandbox_root}/.nexau_history_archive/
+{sandbox_tmp}/.nexau_history_archive/{namespace}/
   transcript.jsonl     # append-only, 每行一条记录
 ```
 
@@ -116,7 +116,7 @@ NexAU 已有的 `AgentRunActionModel` 事件溯源虽然在 DB 里保留了 APPE
 最终归档目录长这样：
 
 ```
-{sandbox}/.nexau_history_archive/
+{sandbox_tmp}/.nexau_history_archive/{namespace}/
   transcript.jsonl              # message 行 + boundary 行
   images/                       # 仅当本会话出现 base64 ImageBlock 时才创建
     {msg_id_1}-{idx}.png
@@ -147,7 +147,7 @@ NexAU 已有的 `AgentRunActionModel` 事件溯源虽然在 DB 里保留了 APPE
 | **不重复存储** | removed 是差集，前一轮的 summary 被下一轮再次压缩时自然进入 transcript（其 id 进入差集） |
 | **崩溃安全** | 单文件 append，不存在 manifest/round 不一致；最坏情况是文件末尾一行半截，跳过即可 |
 | **重启幂等** | 启动时扫所有 `_boundary` 行取 max round，下一轮 = max+1 |
-| **agent 召回** | `Grep <keyword> .nexau_history_archive/transcript.jsonl` 一次到位 |
+| **agent 召回** | 按 summary hint 里的临时归档目录，用 `search_file_content` grep |
 
 > **写入实现**：当前用 `sandbox.write_file()` 做 read+rewrite append（兼容所有 sandbox 后端）。这意味着每轮 IO ∝ 累计大小，单 session 几 MB 量级毫秒级，无需优化。如果未来 sandbox 抽象层加 `append_file()` API，可零成本切过去。
 
@@ -157,9 +157,9 @@ NexAU 已有的 `AgentRunActionModel` 事件溯源虽然在 DB 里保留了 APPE
 
 ```
 📁 [Archive] {N} earlier message(s) archived across {M} compaction round(s) (latest: round {R}).
-To recall earlier conversation, use your file tools on `.nexau_history_archive/transcript.jsonl`:
-  • `search_file_content` to grep for keywords (each matched line is a serialized Message)
-  • `read_file` for full chronological view
+To recall earlier conversation, use your file tools on `{transcript_path}`:
+  • `search_file_content` with dir_path `{archive_dir}` to grep for keywords (each matched line is a serialized Message)
+  • `read_file` on `{transcript_path}` for full chronological view
   • Boundary lines `{"_boundary": ...}` mark each compaction round
 ```
 
@@ -173,8 +173,8 @@ To recall earlier conversation, use your file tools on `.nexau_history_archive/t
 save_history: bool = True
 """开启历史消息文件归档（默认 Opt-out: 启用压缩即归档）。
 
-归档目录位置固定为 ``{sandbox.work_dir}/.nexau_history_archive/``,
-不暴露成 config —— 避免用户输入路径穿越, 默认值就是设计上的唯一选择。
+归档目录位置固定为 ``{sandbox.get_temp_dir()}/.nexau_history_archive/<namespace>/``,
+不写入当前工作目录, 也不暴露成 config —— 避免用户输入路径穿越。
 
 启用归档时, summary 末尾会自动注入"如何召回"的提示文本。
 """
@@ -233,7 +233,7 @@ middlewares:
 触发 3 轮压缩后：
 
 ```
-{sandbox}/.nexau_history_archive/transcript.jsonl
+{sandbox_tmp}/.nexau_history_archive/{namespace}/transcript.jsonl
   # 第 1 轮被移除的 5 条 Message JSON
   # 1 行 _boundary (round=1)
   # 第 2 轮被移除的 4 条 Message JSON (含 round 1 produced summary)
@@ -242,7 +242,7 @@ middlewares:
   # 1 行 _boundary (round=3)
 ```
 
-Agent 后续 turn 中接收到 summary 内嵌 hint，调 `Grep "agent_events_middleware" transcript.jsonl` 一次召回。
+Agent 后续 turn 中接收到 summary 内嵌 hint，按 hint 中的临时目录调 `search_file_content` 一次召回。
 
 ## 权衡取舍
 
@@ -320,15 +320,15 @@ Agent 后续 turn 中接收到 summary 内嵌 hint，调 `Grep "agent_events_mid
 ```bash
 NEXAU_LOG_LEVEL=DEBUG \
   uv run python tests/scripts/test_history_archive_e2e.py
-ls $SANDBOX_ROOT/.nexau_history_archive/   # 应只有 transcript.jsonl
-grep -c '"_boundary"' $SANDBOX_ROOT/.nexau_history_archive/transcript.jsonl   # 行数 == 压缩轮数
+# 具体路径见压缩 hint 或测试脚本输出的 Archive dir
+grep -c '"_boundary"' "$ARCHIVE_DIR/transcript.jsonl"   # 行数 == 压缩轮数
 ```
 
 召回验证：
 
 1. 让 agent 跑多轮对话直到触发 2-3 轮压缩
 2. 在新 turn 询问"刚才第一轮我们讨论的 X 是什么"
-3. 观察 agent 是否调用 `Grep` / `Read` 读取 `.nexau_history_archive/transcript.jsonl`
+3. 观察 agent 是否按 hint 调用 `search_file_content` / `read_file` 读取临时归档路径
 
 ## 未解决的问题
 

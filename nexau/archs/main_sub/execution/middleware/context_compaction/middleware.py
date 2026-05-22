@@ -66,6 +66,8 @@ _CONTEXT_OVERFLOW_MARKERS = (
 )
 CompactionPhase = Literal["before_model", "after_model", "wrap_model_call"]
 CompactionMode = Literal["regular", "emergency"]
+_ARCHIVE_HINT_PREFIX = "📁 [Archive]"
+_ARCHIVE_HINT_END_FRAGMENT = 'Boundary lines `{"_boundary": ...}` mark each compaction round'
 
 
 class ContextCompactionMiddleware(Middleware):
@@ -1083,10 +1085,13 @@ class ContextCompactionMiddleware(Middleware):
         """把归档路径提示注入到 summary 消息末尾；若无 summary 则追加 framework 消息。"""
         if self._archive_writer is None:
             return messages
+        messages = self._remove_existing_archive_hints(messages)
         hint = build_archive_hint(
             total_archived=self._archive_writer.total_archived,
             total_rounds=self._archive_writer.total_rounds,
             latest_round=meta.round,
+            archive_dir=self._archive_writer.archive_dir,
+            transcript_path=self._archive_writer.transcript_path,
         )
         for msg in messages:
             md = msg.metadata or {}
@@ -1102,3 +1107,59 @@ class ContextCompactionMiddleware(Middleware):
             content=[TextBlock(text=hint)],
         )
         return [*messages, framework_msg]
+
+    @staticmethod
+    def _remove_existing_archive_hints(messages: list[Message]) -> list[Message]:
+        """Remove stale archive hints before injecting the latest aggregate hint."""
+        result: list[Message] = []
+        for msg in messages:
+            md = msg.metadata or {}
+            if not (md.get("isSummary") is True or md.get("is_compacted") is True or msg.role == Role.FRAMEWORK):
+                result.append(msg)
+                continue
+
+            changed = False
+            new_content: list[Any] = []
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    cleaned = ContextCompactionMiddleware._strip_archive_hint_text(block.text)
+                    if cleaned != block.text:
+                        changed = True
+                    if cleaned:
+                        new_content.append(block.model_copy(update={"text": cleaned}))
+                    continue
+                new_content.append(block)
+
+            if changed:
+                if new_content:
+                    result.append(msg.model_copy(update={"content": new_content}))
+                continue
+            result.append(msg)
+        return result
+
+    @staticmethod
+    def _strip_archive_hint_text(text: str) -> str:
+        if _ARCHIVE_HINT_PREFIX not in text:
+            return text
+
+        kept_lines: list[str] = []
+        skipping = False
+        changed = False
+        for line in text.splitlines():
+            if not skipping and line.lstrip().startswith(_ARCHIVE_HINT_PREFIX):
+                skipping = True
+                changed = True
+                continue
+            if skipping:
+                if _ARCHIVE_HINT_END_FRAGMENT in line:
+                    skipping = False
+                continue
+            kept_lines.append(line)
+
+        if not changed:
+            return text
+
+        cleaned = "\n".join(kept_lines).strip()
+        while "\n\n\n" in cleaned:
+            cleaned = cleaned.replace("\n\n\n", "\n\n")
+        return cleaned
