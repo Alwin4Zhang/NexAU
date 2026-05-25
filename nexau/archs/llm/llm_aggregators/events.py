@@ -286,6 +286,7 @@ class CompactionFinishedEvent(BaseEvent):
     compacted_token_count: int | None = None
     max_context_tokens: int | None = None
     error: str | None = None
+    fallback: bool = False
 
 
 class TransportErrorEvent(BaseEvent):

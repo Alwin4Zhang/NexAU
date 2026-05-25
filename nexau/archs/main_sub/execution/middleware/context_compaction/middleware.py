@@ -396,6 +396,7 @@ class ContextCompactionMiddleware(Middleware):
         original_token_count: int | None,
         compacted_token_count: int | None,
         error: str | None = None,
+        fallback: bool = False,
     ) -> None:
         # 1. 结束 tracer span（独立于 event emitter）
         self._end_compaction_span(
@@ -429,6 +430,7 @@ class ContextCompactionMiddleware(Middleware):
                 compacted_token_count=compacted_token_count,
                 max_context_tokens=self.max_context_tokens,
                 error=error,
+                fallback=fallback,
                 timestamp=int(datetime.now().timestamp() * 1000),
             )
         )
@@ -631,6 +633,9 @@ class ContextCompactionMiddleware(Middleware):
             strategy_name=self.compaction_strategy.name,
         )
 
+        # 检查 compaction strategy 是否使用了 hard truncation fallback
+        compaction_used_fallback = getattr(self.compaction_strategy, "last_compact_used_fallback", False)
+
         self._compact_count += 1
         self._total_messages_removed += original_count - len(compacted_messages)
         self._emit_compaction_finished(
@@ -643,6 +648,7 @@ class ContextCompactionMiddleware(Middleware):
             compacted_message_count=len(compacted_messages),
             original_token_count=current_tokens,
             compacted_token_count=after_tokens,
+            fallback=compaction_used_fallback,
         )
 
         # RFC-0026: typed REPLACE flows through the generic HistoryEvent
@@ -953,6 +959,9 @@ class ContextCompactionMiddleware(Middleware):
         )
         compacted_message_count = len(compacted_messages)
 
+        # 检查 compaction strategy 是否使用了 hard truncation fallback
+        compaction_used_fallback = getattr(self.compaction_strategy, "last_compact_used_fallback", False)
+
         # Update statistics
         self._compact_count += 1
         self._total_messages_removed += original_message_count - compacted_message_count
@@ -966,6 +975,7 @@ class ContextCompactionMiddleware(Middleware):
             compacted_message_count=compacted_message_count,
             original_token_count=current_tokens,
             compacted_token_count=compacted_tokens,
+            fallback=compaction_used_fallback,
         )
 
         # RFC-0026: typed REPLACE flows through the generic HistoryEvent slot.

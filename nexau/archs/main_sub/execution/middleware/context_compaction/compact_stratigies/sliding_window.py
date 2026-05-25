@@ -186,6 +186,7 @@ class SlidingWindowCompaction:
 
         # 连续 hard truncation fallback 计数器
         self._consecutive_fallback_count: int = 0
+        self._last_compact_used_fallback: bool = False
 
         # Load compact prompt using the resolved path.
         self.compact_prompt = _load_compact_prompt(compact_prompt_path)
@@ -200,6 +201,11 @@ class SlidingWindowCompaction:
             self.keep_user_rounds,
             self.max_context_tokens,
         )
+
+    @property
+    def last_compact_used_fallback(self) -> bool:
+        """Whether the most recent compact() call used hard truncation fallback."""
+        return self._last_compact_used_fallback
 
     @property
     def _summary_input_limit(self) -> int:
@@ -294,6 +300,7 @@ class SlidingWindowCompaction:
         If all summarization attempts fail, uses hard truncation as a last
         resort to guarantee the output fits within context limits.
         """
+        self._last_compact_used_fallback = False
         logger.info(f"[SlidingWindowCompaction] Starting compaction on {len(messages)} messages")
 
         result: list[Message] = []
@@ -354,6 +361,7 @@ class SlidingWindowCompaction:
         在主事件循环上执行 LLM 摘要调用，避免阻塞 event loop。
         分组和窗口逻辑与 sync 版本相同。
         """
+        self._last_compact_used_fallback = False
         logger.info(f"[SlidingWindowCompaction] Starting async compaction on {len(messages)} messages")
 
         result: list[Message] = []
@@ -547,6 +555,7 @@ class SlidingWindowCompaction:
     def _record_fallback(self, messages: list[Message]) -> str:
         """Increment the consecutive fallback counter and return a truncated summary."""
         self._consecutive_fallback_count += 1
+        self._last_compact_used_fallback = True
         logger.warning(
             "[SlidingWindowCompaction] Using hard truncation fallback (consecutive fallback count: %d/%d)",
             self._consecutive_fallback_count,
