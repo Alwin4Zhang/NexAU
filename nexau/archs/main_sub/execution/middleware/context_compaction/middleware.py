@@ -63,6 +63,10 @@ _CONTEXT_OVERFLOW_MARKERS = (
     "input token count",
     "token limit exceeded",
     "context_length_exceeded",
+    # 兼容部分 OpenAI 兼容网关的 overflow 文案,例如:
+    #   "The input (296915 tokens) is longer than the model's context length (262144 tokens)."
+    "longer than the model",
+    "model's context length",
 )
 CompactionPhase = Literal["before_model", "after_model", "wrap_model_call"]
 CompactionMode = Literal["regular", "emergency"]

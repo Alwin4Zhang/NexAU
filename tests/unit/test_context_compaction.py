@@ -816,6 +816,36 @@ class TestContextCompactionMiddleware:
         with pytest.raises(Exception, match="maximum context length"):
             middleware.wrap_model_call(params, fail_call)
 
+    @pytest.mark.parametrize(
+        "error_message",
+        [
+            # 官方 OpenAI 文案
+            "This model's maximum context length is 8192 tokens",
+            # 官方 Anthropic 文案
+            "prompt is too long: 200001 tokens > 200000 maximum",
+            # OpenAI 兼容网关常见文案(本次新增覆盖)
+            "The input (296915 tokens) is longer than the model's context length (262144 tokens).",
+            "Input is longer than the model context window",
+            "context_length_exceeded",
+            "token limit exceeded",
+        ],
+    )
+    def test_is_context_overflow_error_recognizes_provider_phrasings(self, error_message):
+        """`_is_context_overflow_error` 应识别主流 provider 的 overflow 文案。
+
+        关键回归:某些 OpenAI 兼容网关把 overflow 错误措辞成
+        `... is longer than the model's context length ...`,旧的 marker 列表
+        全部未命中,导致 `wrap_model_call` 的 emergency compaction fallback
+        无法被触发,用户直接拿到 400。
+        """
+        assert ContextCompactionMiddleware._is_context_overflow_error(Exception(error_message)) is True
+
+    def test_is_context_overflow_error_ignores_unrelated_errors(self):
+        """无关错误不应被识别为 overflow,避免误触发 emergency compaction。"""
+        assert ContextCompactionMiddleware._is_context_overflow_error(Exception("rate limit reached")) is False
+        assert ContextCompactionMiddleware._is_context_overflow_error(Exception("invalid api key")) is False
+        assert ContextCompactionMiddleware._is_context_overflow_error(Exception("connection reset")) is False
+
     @patch("nexau.archs.main_sub.execution.middleware.context_compaction.compact_stratigies.sliding_window.OpenAI")
     def test_initialization_custom_threshold(self, mock_openai_class, mock_openai_client, mock_token_counter, temp_compact_prompt):
         """Test initialization with custom threshold."""
