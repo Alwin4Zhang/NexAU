@@ -440,19 +440,24 @@ class TestGenerateSummarySafe:
         with patch.object(compaction, "_generate_summary", return_value="Summary OK"):
             result = compaction._generate_summary_safe([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
         assert result == "Summary OK"
-        assert compaction._consecutive_fallback_count == 0
+        assert not compaction._last_compact_used_fallback
 
     def test_direct_summary_failure_triggers_fallback(self, compaction):
         with patch.object(compaction, "_generate_summary", side_effect=RuntimeError("LLM Error")):
             result = compaction._generate_summary_safe([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
-        assert compaction._consecutive_fallback_count == 1
+        assert compaction._last_compact_used_fallback
         # Result is hard truncation fallback text
         assert isinstance(result, str)
 
-    def test_max_consecutive_fallbacks_raises(self, compaction):
-        compaction._consecutive_fallback_count = SlidingWindowCompaction._MAX_CONSECUTIVE_FALLBACKS
-        with pytest.raises(RuntimeError, match="persistently unavailable"):
-            compaction._generate_summary_safe([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
+    def test_repeated_failures_always_fallback(self, compaction):
+        """Hard truncation always succeeds — no consecutive-failure limit."""
+        msgs = [Message(role=Role.USER, content=[TextBlock(text="Hello")])]
+        for _ in range(5):
+            compaction._last_compact_used_fallback = False
+            with patch.object(compaction, "_generate_summary", side_effect=RuntimeError("LLM Error")):
+                result = compaction._generate_summary_safe(msgs)
+            assert compaction._last_compact_used_fallback
+            assert isinstance(result, str)
 
     def test_chunked_summary_on_large_input(self, compaction):
         # Make token count exceed limit
@@ -465,26 +470,31 @@ class TestGenerateSummarySafe:
         compaction.token_counter.count_tokens.side_effect = lambda msgs: len(msgs) * 100000
         with patch.object(compaction, "_chunked_summary", side_effect=RuntimeError("All chunks failed")):
             _ = compaction._generate_summary_safe([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
-        assert compaction._consecutive_fallback_count == 1
+        assert compaction._last_compact_used_fallback
 
     @pytest.mark.anyio
     async def test_async_direct_summary_success(self, compaction):
         with patch.object(compaction, "_generate_summary_async", new_callable=AsyncMock, return_value="Async Summary"):
             result = await compaction._generate_summary_safe_async([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
         assert result == "Async Summary"
-        assert compaction._consecutive_fallback_count == 0
+        assert not compaction._last_compact_used_fallback
 
     @pytest.mark.anyio
     async def test_async_direct_summary_failure_triggers_fallback(self, compaction):
         with patch.object(compaction, "_generate_summary_async", new_callable=AsyncMock, side_effect=RuntimeError("Async LLM Error")):
             _ = await compaction._generate_summary_safe_async([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
-        assert compaction._consecutive_fallback_count == 1
+        assert compaction._last_compact_used_fallback
 
     @pytest.mark.anyio
-    async def test_async_max_consecutive_fallbacks_raises(self, compaction):
-        compaction._consecutive_fallback_count = SlidingWindowCompaction._MAX_CONSECUTIVE_FALLBACKS
-        with pytest.raises(RuntimeError, match="persistently unavailable"):
-            await compaction._generate_summary_safe_async([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
+    async def test_async_repeated_failures_always_fallback(self, compaction):
+        """Async: hard truncation always succeeds — no consecutive-failure limit."""
+        msgs = [Message(role=Role.USER, content=[TextBlock(text="Hello")])]
+        for _ in range(5):
+            compaction._last_compact_used_fallback = False
+            with patch.object(compaction, "_generate_summary_async", new_callable=AsyncMock, side_effect=RuntimeError("fail")):
+                result = await compaction._generate_summary_safe_async(msgs)
+            assert compaction._last_compact_used_fallback
+            assert isinstance(result, str)
 
     @pytest.mark.anyio
     async def test_async_chunked_summary_on_large_input(self, compaction):
@@ -492,6 +502,13 @@ class TestGenerateSummarySafe:
         with patch.object(compaction, "_chunked_summary_async", new_callable=AsyncMock, return_value="Async chunked"):
             result = await compaction._generate_summary_safe_async([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
         assert result == "Async chunked"
+
+    @pytest.mark.anyio
+    async def test_async_chunked_summary_failure_triggers_fallback(self, compaction):
+        compaction.token_counter.count_tokens.side_effect = lambda msgs: len(msgs) * 100000
+        with patch.object(compaction, "_chunked_summary_async", new_callable=AsyncMock, side_effect=RuntimeError("All chunks failed")):
+            _ = await compaction._generate_summary_safe_async([Message(role=Role.USER, content=[TextBlock(text="Hello")])])
+        assert compaction._last_compact_used_fallback
 
 
 # ---------------------------------------------------------------------------
@@ -563,18 +580,6 @@ class TestInjectSummary:
         assert len(result) == 3
         assert result[0].role == Role.USER
         assert "my summary" in result[0].get_text_content()
-
-
-# ---------------------------------------------------------------------------
-# _record_fallback
-# ---------------------------------------------------------------------------
-
-
-class TestRecordFallback:
-    def test_increments_counter(self, compaction):
-        assert compaction._consecutive_fallback_count == 0
-        compaction._record_fallback([Message(role=Role.USER, content=[TextBlock(text="test")])])
-        assert compaction._consecutive_fallback_count == 1
 
 
 # ---------------------------------------------------------------------------
