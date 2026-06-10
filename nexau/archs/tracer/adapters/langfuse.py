@@ -44,6 +44,17 @@ _TO_LANGFUSE_FIELD: dict[str, str | None] = {
     "cache_read_tokens": "cache_read_input_tokens",
     "cache_creation_tokens": "cache_creation_input_tokens",
     "input_tokens_uncached": None,
+    # provider/会话预聚合的总数必须用 Langfuse 规范的字面量 `total` key 上报。
+    # Langfuse ingestion（worker IngestionService）的逻辑是：usage_details 里若不存在
+    # 字面量 `total` key，就把 map 里**所有值求和**当作 total。`total_tokens`（带后缀）
+    # 不被识别为 total，于是会和 input/completion/reasoning 等拆分项一起被二次累加，
+    # 导致 UI 上 total ≈ 2×（拆分项之和 + total_tokens）。映射成 `total` 后 Langfuse
+    # 直接采用该权威值，不再求和。
+    "total_tokens": "total",
+    # Gemini REST 原始 camelCase（与 TokenUsage._resolve_total_tokens 的识别保持一致）。
+    # nexau 自身 pipeline 在 _enrich_gemini_trace_outputs 已归一化为 total_tokens，
+    # 此别名保护直接使用 SDK tracer、传入原始 usageMetadata 的第三方调用方。
+    "totalTokenCount": "total",
 }
 
 
@@ -72,7 +83,8 @@ def _sanitize_usage(usage: Mapping[str, object] | TokenUsage) -> dict[str, int]:
        参见: https://github.com/langfuse/langfuse/issues/4961
     2. 展开 provider 嵌套的 details 字段（OpenAI prompt_tokens_details 等）。
     3. 统一映射字段名为 Langfuse 标准名，确保所有 provider 的
-       cache 命中率在 Langfuse UI 正确显示。
+       cache 命中率在 Langfuse UI 正确显示；并把预聚合的 `total_tokens`
+       映射为字面量 `total`，避免被 Langfuse 当成额外拆分项二次累加。
     """
     if isinstance(usage, TokenUsage):
         raw: dict[str, int] = usage.to_dict()
@@ -82,8 +94,18 @@ def _sanitize_usage(usage: Mapping[str, object] | TokenUsage) -> dict[str, int]:
     result: dict[str, int] = {}
     for key, value in raw.items():
         mapped_key = _TO_LANGFUSE_FIELD.get(key, key)
-        if mapped_key is not None and mapped_key not in result:
-            result[mapped_key] = value
+        if mapped_key is None or mapped_key in result:
+            continue
+        # 严格 int 过滤（排除 bool 子类）：raw-dict 路径 _flatten_usage_dict 已过滤，
+        # 但 TokenUsage 路径是裸信任 to_dict()——动态运行时仍可能被构造进 None/str，
+        # 在此统一兜底，确保 docstring 的「只保留 int」承诺对两条路径都成立。
+        if type(value) is not int:
+            continue
+        # total<=0（例如直接构造、未填总数的 TokenUsage）时不写 `total`，
+        # 让 Langfuse 回落到对拆分项求和，避免把 total 钉死成 0 而盖掉真实用量。
+        if mapped_key == "total" and value <= 0:
+            continue
+        result[mapped_key] = value
     return result
 
 

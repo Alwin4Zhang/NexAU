@@ -388,9 +388,9 @@ def test_sanitize_usage_filters_non_int_values():
         "input_tokens": 10,
         "completion_tokens": 20,
     }
-    # 嵌套 dict（空 details 不提取任何字段）
+    # 嵌套 dict（空 details 不提取任何字段）；total_tokens 映射为 Langfuse 规范 `total`
     assert _sanitize_usage({"total_tokens": 30, "completion_tokens_details": {}}) == {
-        "total_tokens": 30,
+        "total": 30,
     }
     # None 值
     assert _sanitize_usage({"input_tokens": 5, "audio_tokens": None}) == {"input_tokens": 5}
@@ -421,7 +421,7 @@ def test_sanitize_usage_maps_cache_fields_to_langfuse_names():
         "input_tokens": 70,
         "completion_tokens": 20,
         "reasoning_tokens": 3,
-        "total_tokens": 100,
+        "total": 100,
         "cache_creation_input_tokens": 5,
         "cache_read_input_tokens": 10,
     }
@@ -440,7 +440,7 @@ def test_sanitize_usage_maps_raw_dict_cache_fields():
     assert _sanitize_usage(raw) == {
         "input_tokens": 50,
         "completion_tokens": 30,
-        "total_tokens": 90,
+        "total": 90,
         "cache_read_input_tokens": 10,
         "cache_creation_input_tokens": 5,
     }
@@ -466,7 +466,7 @@ def test_sanitize_usage_extracts_openai_nested_cache_fields():
     assert result == {
         "input_tokens": 100,
         "completion_tokens": 50,
-        "total_tokens": 150,
+        "total": 150,
         "cache_read_input_tokens": 10,
         "audio_tokens": 0,
         "reasoning_tokens": 5,
@@ -486,7 +486,7 @@ def test_sanitize_usage_maps_gemini_enriched_usage():
     assert result == {
         "input_tokens": 80,
         "completion_tokens": 40,
-        "total_tokens": 130,
+        "total": 130,
         "cache_read_input_tokens": 15,
         "reasoning_tokens": 10,
     }
@@ -507,6 +507,91 @@ def test_sanitize_usage_anthropic_raw_response():
         "cache_read_input_tokens": 10,
         "cache_creation_input_tokens": 5,
     }
+
+
+def test_sanitize_usage_total_uses_canonical_key_not_double_counted():
+    """回归：provider 预聚合总数必须以字面量 `total` 上报，避免 Langfuse 二次累加。
+
+    Langfuse ingestion 规则：usage_details 若无字面量 `total` key，则把 map 内**所有值
+    求和**作为 total。历史 bug 把总数留作 `total_tokens`（带后缀），于是 input + output +
+    total_tokens ≈ 2× total，UI 上 token 数虚高约 2 倍。映射成 `total` 后 Langfuse 直接
+    采用该权威值，不再求和。
+    """
+    usage = TokenUsage(
+        input_tokens=300,
+        completion_tokens=20,
+        reasoning_tokens=6,
+        total_tokens=320,
+    )
+    result = _sanitize_usage(usage)
+
+    # 必须用规范 `total`，且不得再出现会被当作额外拆分项的 `total_tokens`
+    assert result["total"] == 320
+    assert "total_tokens" not in result
+
+    # 模拟 Langfuse 的「无字面量 total 则全量求和」逻辑：有 `total` 时它直接采用该值，
+    # 不会把拆分项叠加上去（这正是修复点）。
+    langfuse_total = result["total"] if "total" in result else sum(result.values())
+    assert langfuse_total == 320  # 修复前会是 ~646（320 拆分 + 320 total_tokens）
+
+
+def test_sanitize_usage_omits_zero_total_to_allow_langfuse_fallback():
+    """total<=0（直接构造、未填总数）时不写 `total`，让 Langfuse 回落到对拆分项求和。
+
+    否则会把 Langfuse 的 total 钉死成 0，盖掉真实的 input/output 用量。
+    """
+    usage = TokenUsage(input_tokens=100, completion_tokens=50)  # total_tokens 默认 0
+    result = _sanitize_usage(usage)
+
+    assert "total" not in result
+    assert result["input_tokens"] == 100
+    assert result["completion_tokens"] == 50
+
+
+def test_sanitize_usage_drops_non_int_and_bool_on_tokenusage_path():
+    """TokenUsage 路径也要强制「只保留 int」契约；bool 视为非 int 丢弃。
+
+    动态运行时可能绕过类型标注把 None/str 构造进 TokenUsage；bool 是 int 子类但
+    Langfuse 服务端 RawUsageDetails 按 `typeof value === "number"` 过滤会丢弃 JSON
+    boolean，客户端先丢与服务端语义对齐，且避免 `value <= 0` 比较抛 TypeError。
+    """
+    # 绕过类型标注构造畸形 TokenUsage（运行时合法：dataclass 不做校验）
+    usage = TokenUsage(
+        input_tokens=100,
+        completion_tokens=50,
+        total_tokens=cast(int, None),  # 畸形：None 进了 int 字段
+    )
+    result = _sanitize_usage(usage)
+    # None 的 total 被丢弃；其余字段（含默认 0 值）正常映射上报
+    assert result == {
+        "input_tokens": 100,
+        "completion_tokens": 50,
+        "reasoning_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    assert "total" not in result
+    assert "total_tokens" not in result
+
+    # raw dict 路径：bool 被严格 int 过滤丢弃（与 Langfuse 服务端行为一致）
+    assert _sanitize_usage({"input_tokens": 10, "is_cached": True}) == {"input_tokens": 10}
+
+
+def test_sanitize_usage_maps_gemini_raw_total_token_count():
+    """Gemini REST 原始 camelCase 的 totalTokenCount 也应映射为 `total`。
+
+    nexau 自身 pipeline 已在 _enrich_gemini_trace_outputs 归一化，此处保护
+    直接用 SDK tracer 传入原始 usageMetadata 的第三方调用方，避免
+    totalTokenCount 被 Langfuse 当作额外拆分项二次累加（同一 bug class）。
+    """
+    raw: dict[str, object] = {
+        "promptTokenCount": 80,
+        "candidatesTokenCount": 40,
+        "totalTokenCount": 120,
+    }
+    result = _sanitize_usage(raw)
+    assert result["total"] == 120
+    assert "totalTokenCount" not in result
 
 
 def test_langfuse_tracer_end_span_sanitizes_usage():
@@ -531,7 +616,7 @@ def test_langfuse_tracer_end_span_sanitizes_usage():
     assert usage_call["usage_details"] == {
         "input_tokens": 10,
         "completion_tokens": 20,
-        "total_tokens": 30,
+        "total": 30,
     }
 
 
