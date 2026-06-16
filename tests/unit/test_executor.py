@@ -24,7 +24,7 @@ Tests cover:
 - Token and iteration limit handling
 """
 
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -643,6 +643,115 @@ class TestExecutorExecution:
         tool_index = messages.index(matching_tool_messages[0])
         assert tool_index + 1 < len(messages)
         assert messages[tool_index + 1].role == Role.ASSISTANT
+
+    def test_execute_injects_session_id_into_tool_context(self, mock_llm_config, agent_state):
+        """Tool ctx should expose the Executor session_id on the sync run path."""
+
+        observed_session_ids: list[str] = []
+
+        def capture_session(ctx: FrameworkContext) -> dict[str, str]:
+            observed_session_ids.append(ctx.session_id)
+            return {"session_id": ctx.session_id}
+
+        tool = Tool(
+            name="capture_session",
+            description="Capture the framework session id.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=capture_session,
+        )
+
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry=make_tool_registry({"capture_session": tool}),
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            max_iterations=2,
+            tool_call_mode="openai",
+            structured_tools=[tool.to_structured_definition()],
+            session_id="session-tool-ctx-sync",
+        )
+
+        first_response = ModelResponse(
+            content="",
+            tool_calls=[
+                ModelToolCall(
+                    call_id="call_session",
+                    name="capture_session",
+                    arguments={},
+                    raw_arguments="{}",
+                ),
+            ],
+        )
+        second_response = ModelResponse(content="Final response")
+
+        with patch.object(executor.llm_caller, "call_llm", side_effect=[first_response, second_response]):
+            response, _ = executor.execute(
+                make_history("You are a helpful assistant.", "Use the tool"),
+                agent_state,
+            )
+
+        assert response == "Final response"
+        assert observed_session_ids == ["session-tool-ctx-sync"]
+
+    @pytest.mark.anyio
+    async def test_execute_async_injects_session_id_into_tool_context(self, mock_llm_config, agent_state):
+        """Tool ctx should expose the Executor session_id on the async run path."""
+
+        observed_session_ids: list[str] = []
+
+        def capture_session(ctx: FrameworkContext) -> dict[str, str]:
+            observed_session_ids.append(ctx.session_id)
+            return {"session_id": ctx.session_id}
+
+        tool = Tool(
+            name="capture_session",
+            description="Capture the framework session id.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            implementation=capture_session,
+        )
+
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry=make_tool_registry({"capture_session": tool}),
+            sub_agents={},
+            stop_tools=set(),
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+            max_iterations=2,
+            tool_call_mode="openai",
+            structured_tools=[tool.to_structured_definition()],
+            session_id="session-tool-ctx-async",
+        )
+
+        first_response = ModelResponse(
+            content="",
+            tool_calls=[
+                ModelToolCall(
+                    call_id="call_session",
+                    name="capture_session",
+                    arguments={},
+                    raw_arguments="{}",
+                ),
+            ],
+        )
+        second_response = ModelResponse(content="Final response")
+
+        with patch.object(
+            executor.llm_caller,
+            "call_llm_async",
+            new=AsyncMock(side_effect=[first_response, second_response]),
+        ):
+            response, _ = await executor.execute_async(
+                make_history("You are a helpful assistant.", "Use the tool"),
+                agent_state,
+            )
+
+        assert response == "Final response"
+        assert observed_session_ids == ["session-tool-ctx-async"]
 
     def test_execute_openai_tool_messages_support_image_results(self, mock_llm_config, agent_state):
         """Tool results can include images (ToolOutputImage or dict form) in tool messages."""

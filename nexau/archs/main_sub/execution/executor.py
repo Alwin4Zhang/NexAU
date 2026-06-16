@@ -692,6 +692,7 @@ class Executor:
             _tool_registry=self._tool_registry,
             _shutdown_event=self._shutdown_event,
             _history=history if isinstance(history, HistoryList) else None,
+            session_id=self._session_id or "",
             trace_id=trace_id,
         )
 
@@ -1259,6 +1260,7 @@ class Executor:
                 # RFC-0026: typed REPLACE writers (compaction) reach
                 # HistoryList through ctx.history.replace(...).
                 _history=history if isinstance(history, HistoryList) else None,
+                session_id=self._session_id or "",
                 # RFC-0024: caller-supplied trace_id, FrameworkContext-owned.
                 trace_id=trace_id,
             ),
