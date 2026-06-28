@@ -521,8 +521,17 @@ def apply_patch(
     Returns:
         Dict with content and returnDisplay following NexAU builtin conventions
     """
+    try:
+        hunks = _parse_patch_text(input)
+    except InvalidHunkError as exc:
+        return _error_result(
+            f"Invalid patch hunk on line {exc.line_number}: {exc.message}",
+            "INVALID_PATCH_HUNK",
+        )
+    except InvalidPatchError as exc:
+        return _error_result(f"Invalid patch: {exc}", "INVALID_PATCH")
+
     # RFC-0019: 权限检查（解析 patch 后、sandbox 之前，确保异常不被 try/except 吞掉）
-    hunks = _parse_patch_text(input)
     if ctx is not None:
         for hunk in hunks:
             check_path_permission(ctx, hunk.path)
@@ -613,11 +622,6 @@ def apply_patch(
             },
         }
 
-    except InvalidHunkError as exc:
-        return _error_result(
-            f"Invalid patch hunk on line {exc.line_number}: {exc.message}",
-            "INVALID_PATCH_HUNK",
-        )
     except InvalidPatchError as exc:
         return _error_result(f"Invalid patch: {exc}", "INVALID_PATCH")
     except PatchApplicationError as exc:

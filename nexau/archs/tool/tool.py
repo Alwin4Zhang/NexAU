@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _UNRESOLVED_ANNOTATION = object()
+_INJECTED_PARAM_KEYS = frozenset({"agent_state", "global_storage", "sandbox", "ctx"})
 
 
 StructuredToolKind = Literal["tool", "sub_agent"]
@@ -568,8 +569,7 @@ class Tool:
                     filtered_params.pop("sandbox", None)
 
         # Validate parameters (excluding framework-injected params for schema validation)
-        _injected_keys = {"agent_state", "global_storage", "sandbox", "ctx"}
-        validation_params = {k: v for k, v in filtered_params.items() if k not in _injected_keys}
+        validation_params = {k: v for k, v in filtered_params.items() if k not in _INJECTED_PARAM_KEYS}
         self.validate_params(validation_params)
 
         try:
@@ -681,8 +681,7 @@ class Tool:
                     filtered_params.pop("sandbox", None)
 
         # Validate parameters (excluding framework-injected params for schema validation)
-        _injected_keys = {"agent_state", "global_storage", "sandbox", "ctx"}
-        validation_params = {k: v for k, v in filtered_params.items() if k not in _injected_keys}
+        validation_params = {k: v for k, v in filtered_params.items() if k not in _INJECTED_PARAM_KEYS}
         self.validate_params(validation_params)
 
         try:
@@ -732,22 +731,14 @@ class Tool:
     def validate_params(self, params: dict[str, Any]) -> None:
         """Validate parameters against schema.
 
-        Only validates parameters that are defined in the schema.
-        Extra parameters (injected by hooks or with default values) are ignored.
-
         Raises:
             ValueError: If parameters fail schema validation, with detailed error message.
         """
-        # Extract only the parameters that are defined in the schema
-        schema_properties = self.input_schema.get("properties", {})
-        schema_params = {k: v for k, v in params.items() if k in schema_properties}
-
         try:
-            # Validate only the schema-defined parameters
-            jsonschema.validate(schema_params, self.input_schema)
+            jsonschema.validate(params, self.input_schema)
         except jsonschema.ValidationError as e:
             raise ValueError(
-                f"Invalid parameters for tool '{self.name}': {e.message}. params={schema_params}",
+                f"Invalid parameters for tool '{self.name}': {e.message}. params={params}",
             ) from e
 
     def _validate_schema(self):

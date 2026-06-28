@@ -382,8 +382,8 @@ class TestToolExecutorExtraKwargs:
                 extra_kwargs={"agent_state": "x"},
             )
 
-    def test_unknown_field_passes_through_and_errors(self, agent_state):
-        """Unknown field (not in schema) bypasses validation and reaches the function, causing TypeError if not accepted."""
+    def test_unknown_field_rejected_by_schema_when_additional_properties_false(self, agent_state):
+        """Unknown fields are rejected up front when the schema forbids them."""
 
         def impl(a, agent_state=None):
             return {"a": a}
@@ -405,8 +405,8 @@ class TestToolExecutorExtraKwargs:
             tool_call_id="call_unknown",
         )
 
-        assert result["error_type"] == "TypeError"
-        assert "unexpected keyword argument 'x'" in result["error"]
+        assert result["error_type"] == "ValueError"
+        assert "Additional properties are not allowed" in result["error"]
 
     def test_extra_kwargs_satisfy_required_fields(self, agent_state):
         """extra_kwargs alone can satisfy required schema fields."""
@@ -433,8 +433,8 @@ class TestToolExecutorExtraKwargs:
 
         assert result["a"] == 10
 
-    def test_unknown_field_with_kwargs_accepted(self, agent_state):
-        """Unknown fields should succeed when implementation accepts **kwargs."""
+    def test_unknown_field_with_kwargs_accepted_when_schema_allows_extra(self, agent_state):
+        """Unknown fields can still succeed when the schema allows extra fields."""
 
         def impl(a, **kwargs):
             return {"a": a, "extras": kwargs}
@@ -442,7 +442,7 @@ class TestToolExecutorExtraKwargs:
         tool = Tool(
             name="unknown_ok",
             description="accept unknown via kwargs",
-            input_schema={"type": "object", "properties": {"a": {"type": "number"}}, "additionalProperties": False},
+            input_schema={"type": "object", "properties": {"a": {"type": "number"}}},
             implementation=impl,
             extra_kwargs={"x": 1},
         )
@@ -576,6 +576,7 @@ class TestToolExecutorHooks:
             description="An async tool that errors",
             input_schema={"type": "object", "properties": {}},
             implementation=error_tool,
+            formatter="xml",
         )
 
         executor = ToolExecutor(
@@ -755,6 +756,67 @@ class TestToolExecutorStopTools:
         # Error status should clear the stop tool flag
         assert result["_is_stop_tool"] is False
         assert result["status"] == "error"
+
+    def test_stop_tool_with_string_false_success_does_not_stop(self, agent_state):
+        """String false-like status flags should be treated as tool errors."""
+
+        def stop_tool(agent_state=None) -> dict:
+            return {"success": "false", "message": "Failed"}
+
+        tool = Tool(
+            name="stop_tool",
+            description="A stop tool",
+            input_schema={"type": "object", "properties": {}},
+            implementation=stop_tool,
+        )
+
+        executor = ToolExecutor(
+            tool_registry=make_tool_registry({"stop_tool": tool}),
+            stop_tools={"stop_tool"},
+        )
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="stop_tool",
+            parameters={},
+            tool_call_id="call_123",
+        )
+
+        assert result["_is_stop_tool"] is False
+        assert result["success"] == "false"
+
+    def test_stop_tool_with_schema_invalid_arguments_does_not_stop(self, agent_state):
+        """Stop tool arguments that fail JSON Schema validation should not terminate."""
+
+        from nexau.archs.tool.builtin.session_tools.complete_task import complete_task
+
+        tool = Tool(
+            name="complete_task",
+            description="A stop tool that returns a JSON acknowledgement string",
+            input_schema={
+                "type": "object",
+                "properties": {"result": {"type": "string"}},
+                "required": ["result"],
+                "additionalProperties": False,
+            },
+            implementation=complete_task,
+        )
+
+        executor = ToolExecutor(
+            tool_registry=make_tool_registry({"complete_task": tool}),
+            stop_tools={"complete_task"},
+        )
+
+        result = executor.execute_tool(
+            agent_state=agent_state,
+            tool_name="complete_task",
+            parameters={"result": "done", "unexpected": "value"},
+            tool_call_id="call_123",
+        )
+
+        assert result["_is_stop_tool"] is False
+        assert result["error_type"] == "ValueError"
+        assert "Additional properties are not allowed" in result["error"]
 
     def test_non_stop_tool(self, agent_state):
         """Test normal tool (not a stop tool)."""

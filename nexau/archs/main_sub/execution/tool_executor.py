@@ -304,9 +304,6 @@ class ToolExecutor:
             execution_error=execution_error,
         )
 
-        if execution_error:
-            raise execution_error
-
         return execution_result
 
     def finalize_tool_execution(
@@ -329,13 +326,15 @@ class ToolExecutor:
         raw_output = self._normalize_tool_output(result)
         agent_state.record_source_id(tool.source_id)
 
-        if tool_name in self.stop_tools:
+        inferred_error = execution_error is not None or self.should_mark_llm_output_as_error(raw_output)
+
+        if tool_name in self.stop_tools and not inferred_error:
             logger.info(
                 f"🛑 Stop tool '{tool_name}' executed, marking for early termination",
             )
             raw_output["_is_stop_tool"] = True
-
-        inferred_error = execution_error is not None or self._should_mark_llm_output_as_error(raw_output)
+        elif tool_name in self.stop_tools:
+            raw_output["_is_stop_tool"] = False
 
         llm_tool_output = tool.format_output_for_llm(
             tool_input=tool_parameters,
@@ -365,7 +364,7 @@ class ToolExecutor:
             except Exception as hook_error:
                 logger.error(f"❌ After-tool middleware execution failed for '{tool_name}': {hook_error}")
 
-        if raw_output.get("status") == "error" and raw_output.get("_is_stop_tool", False):
+        if self.should_mark_llm_output_as_error(raw_output) and raw_output.get("_is_stop_tool", False):
             logger.error(
                 f"❌ Finish Tool '{tool_name}' execution failed, will continue.",
             )
@@ -383,7 +382,7 @@ class ToolExecutor:
         return ToolExecutionResult(raw_output=raw_output, llm_tool_output=llm_tool_output)
 
     @staticmethod
-    def _should_mark_llm_output_as_error(raw_output: JsonDict) -> bool:
+    def should_mark_llm_output_as_error(raw_output: JsonDict) -> bool:
         """Infer whether formatter should render the output on the error path.
 
         RFC-0017: error-aware formatter routing
@@ -394,8 +393,12 @@ class ToolExecutor:
         """
 
         status_value = raw_output.get("status")
-        if status_value == "error":
+        if isinstance(status_value, str) and status_value.lower() in {"error", "failed", "failure", "fail"}:
             return True
+
+        for flag_key in ("success", "ok", "task_completed"):
+            if ToolExecutor._is_false_like(raw_output.get(flag_key)):
+                return True
 
         if "error" not in raw_output:
             return False
@@ -405,6 +408,14 @@ class ToolExecutor:
             return bool(error_value.strip())
 
         return error_value is not None
+
+    @staticmethod
+    def _is_false_like(value: object) -> bool:
+        if value is False:
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() in {"false", "no", "0"}
+        return False
 
     @staticmethod
     def _normalize_tool_output(result: Any) -> JsonDict:

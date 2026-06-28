@@ -1367,6 +1367,53 @@ class TestExecutorStopToolHandling:
         assert "<tool_result>" in processed
         assert len(feedbacks) == 1
 
+    def test_schema_invalid_stop_tool_arguments_do_not_stop(self, mock_llm_config, agent_state):
+        """A stop tool call that fails JSON Schema validation should feed the error back."""
+
+        from nexau.archs.tool.builtin.session_tools.complete_task import complete_task
+
+        tool = Tool(
+            name="complete_task",
+            description="A stop tool",
+            input_schema={
+                "type": "object",
+                "properties": {"result": {"type": "string"}},
+                "required": ["result"],
+                "additionalProperties": False,
+            },
+            implementation=complete_task,
+        )
+
+        executor = Executor(
+            agent_name="test_agent",
+            agent_id="test_id",
+            tool_registry=make_tool_registry({"complete_task": tool}),
+            sub_agents={},
+            stop_tools={"complete_task"},
+            openai_client=Mock(),
+            llm_config=mock_llm_config,
+        )
+
+        tool_call = ToolCall(
+            tool_name="complete_task",
+            parameters={"result": "done", "unexpected": "value"},
+            raw_content="<tool_call>...</tool_call>",
+        )
+
+        parsed_response = ParsedResponse(
+            original_response="Stopping",
+            tool_calls=[tool_call],
+        )
+
+        ctx = make_framework_context(executor)
+        processed, should_stop, result, feedbacks, _ = executor._execute_parsed_calls(parsed_response, agent_state, framework_context=ctx)
+
+        assert should_stop is False
+        assert result is None
+        assert len(feedbacks) == 1
+        assert feedbacks[0]["is_error"] is True
+        assert "Additional properties are not allowed" in processed
+
 
 class TestExecutorParallelExecution:
     """Test parallel execution of tools and sub-agents."""

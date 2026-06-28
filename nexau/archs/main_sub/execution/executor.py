@@ -2165,6 +2165,10 @@ class Executor:
                 continue
 
             raw_output, llm_tool_output = self._split_tool_outputs(result)
+            feedback_is_error = is_error
+            if isinstance(raw_output, dict):
+                raw_output_dict = cast(dict[str, Any], raw_output)
+                feedback_is_error = feedback_is_error or ToolExecutor.should_mark_llm_output_as_error(raw_output_dict)
             result_str = self._serialize_llm_tool_output(llm_tool_output)
             execution_feedbacks.append(
                 {
@@ -2173,13 +2177,13 @@ class Executor:
                     "content": result_str,
                     "output": raw_output,
                     "llm_tool_output": llm_tool_output,
-                    "is_error": is_error,
+                    "is_error": feedback_is_error,
                 }
             )
 
             # ToolCall.source indicates call format; structured tool calls do not append XML tool results.
             should_append_xml = call_obj.source != "structured"
-            if is_error:
+            if feedback_is_error:
                 if should_append_xml:
                     tool_results.append(
                         f"\n<tool_result>\n<tool_name>{tool_name}</tool_name>\n<error>{result_str}</error>\n</tool_result>\n"
@@ -2191,17 +2195,18 @@ class Executor:
                     )
                 # 检查 stop tool
                 try:
+                    stop_raw_output: dict[str, Any] | None
                     if isinstance(raw_output, dict):
-                        raw_output_dict = cast(dict[str, Any], raw_output)
+                        stop_raw_output = cast(dict[str, Any], raw_output)
                     else:
-                        raw_output_dict = None
+                        stop_raw_output = None
 
-                    if raw_output_dict is not None and raw_output_dict.get("_is_stop_tool"):
+                    if stop_raw_output is not None and stop_raw_output.get("_is_stop_tool"):
                         stop_tool_detected = True
                         self._last_stop_tool_name = tool_name
                         stop_tool_result = self._extract_stop_tool_result(
                             tool_name=tool_name,
-                            raw_output=raw_output_dict,
+                            raw_output=stop_raw_output,
                             tool_call=call_obj,
                         )
                 except TypeError:
@@ -2490,6 +2495,10 @@ class Executor:
                         continue
 
                     raw_output, llm_tool_output = self._split_tool_outputs(result)
+                    feedback_is_error = is_error
+                    if isinstance(raw_output, dict):
+                        raw_output_dict = cast(dict[str, Any], raw_output)
+                        feedback_is_error = feedback_is_error or ToolExecutor.should_mark_llm_output_as_error(raw_output_dict)
                     result_str = self._serialize_llm_tool_output(llm_tool_output)
                     execution_feedbacks.append(
                         {
@@ -2498,10 +2507,10 @@ class Executor:
                             "content": result_str,
                             "output": raw_output,
                             "llm_tool_output": llm_tool_output,
-                            "is_error": is_error,
+                            "is_error": feedback_is_error,
                         },
                     )
-                    if is_error:
+                    if feedback_is_error:
                         logger.error(
                             f"❌ Tool '{tool_name}' error: {result_str}",
                         )
@@ -2531,17 +2540,18 @@ class Executor:
 
                         # Check if this tool result indicates a stop tool was executed
                         try:
+                            stop_raw_output: dict[str, Any] | None
                             if isinstance(raw_output, dict):
-                                raw_output_dict = cast(dict[str, Any], raw_output)
+                                stop_raw_output = cast(dict[str, Any], raw_output)
                             else:
-                                raw_output_dict = None
+                                stop_raw_output = None
 
-                            if raw_output_dict is not None and raw_output_dict.get("_is_stop_tool"):
+                            if stop_raw_output is not None and stop_raw_output.get("_is_stop_tool"):
                                 stop_tool_detected = True
                                 self._last_stop_tool_name = tool_name
                                 stop_tool_result = self._extract_stop_tool_result(
                                     tool_name=tool_name,
-                                    raw_output=raw_output_dict,
+                                    raw_output=stop_raw_output,
                                     tool_call=call_obj,
                                 )
                                 logger.info(
