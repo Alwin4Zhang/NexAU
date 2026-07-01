@@ -16,11 +16,25 @@
 
 RFC-0027: 敏感词中间件
 
-在模型调用前后扫描文本：``before_model`` 拦用户输入（命中则不发起 LLM 调用），
-``after_model`` 拦模型输出。命中时通过 ``HookResult.force_stop_reason``
-（RFC-0027 强制停止通道）让 executor 以 ``ERROR_OCCURRED`` 终止本次 run，把统一
-拒绝文案作为最终回复，并即时发射专属的 ``ContentBlockedEvent``（携带来源/类别/
-命中词；仿 compaction 中间件的事件模式，与终止用的 RunErrorEvent 区分）。
+在模型调用前后扫描文本：``before_model`` 拦用户输入，``after_model`` 拦模型输出。
+命中时根据 ``input_action`` / ``output_action`` 选择三种动作之一，命中事件
+始终通过 ``ContentBlockedEvent`` 上报（与终止用的 ``RunErrorEvent`` 区分）。
+
+命中动作 (``OnHitAction``)：
+
+- ``terminate``：设 ``force_stop_reason=ERROR_OCCURRED``, 用 ``refusal_template``
+  拒绝文案替换/追加 assistant 消息, executor 把本次 run 当作错误终止。RFC-0027
+  原始行为, 适合严苛合规场景 (审计/政府客户)。
+- ``mask`` (默认)：把命中位置在原文中替换为 ``mask_template`` (默认 ``***``),
+  assistant 看到的是脱敏后的输入, run 正常继续。是大部分对话场景的合理 fallback,
+  让用户的对话不会被一个敏感词整轮打断。需要审计标签时显式传
+  ``mask_template="[<{category}>]"``。
+- ``soft_reject``：用 ``soft_refusal_template`` 拒绝文案替换/追加 assistant
+  消息, force_stop_reason=``SUCCESS``。run 算正常完成 (不是错误), 调用方拿到的
+  ``terminal_reason`` 与正常对话一致, 只是末条回复是温和拒绝。**input 路径**额外
+  把 history 里命中的敏感词 mask 掉, 这样下一轮 user 换话题时 history 残留
+  不会再触发同一拒绝 (语义: 礼貌跳过当轮, 后续可继续)。适合"不想报错也不想
+  让 LLM 看到原文"的场景。
 
 词库来源必须显式配置：支持自定义目录、单文件或显式词表。
 
@@ -33,6 +47,7 @@ import logging
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -51,12 +66,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 默认拒绝回复（参考 konsheng/Sensitive-lexicon 的语义分类作为提示模板）
+
+class OnHitAction(str, Enum):
+    """RFC-0027 follow-up: 命中敏感词时的处理动作。
+
+    见模块 docstring 的详细说明。
+    """
+
+    TERMINATE = "terminate"
+    MASK = "mask"
+    SOFT_REJECT = "soft_reject"
+
+
+# 默认 terminate / soft_reject 文案（参考 konsheng/Sensitive-lexicon 的语义分类作为提示模板）
 _DEFAULT_REFUSAL_TEMPLATE = (
     "⚠️ 内容安全提示：检测到{source}包含「{category}」类敏感词（命中 {hits}），"
     "已按照内部内容安全策略中断本次请求。\n\n"
     "如确有合规业务需要，请联系内容安全负责人调整词库或申请白名单。"
 )
+
+# 默认 soft_reject 文案 (比 terminate 文案更柔和, 不暗示"错误"语义)
+_DEFAULT_SOFT_REFUSAL_TEMPLATE = "抱歉, {source}涉及不便回答的话题, 跳过本轮。如有合规业务需要欢迎换个问法或联系内容安全负责人。"
+
+# 默认 mask 占位符: 密码遮挡的通用约定, 简短中性, LLM 看到也容易理解。
+# 想带类别审计标签的, 显式传 ``mask_template="[<{category}>]"``;
+# 想按原词长度自适应的, 传 ``mask_template="*{length}*"`` 之类。
+_DEFAULT_MASK_TEMPLATE = "***"
 
 # 默认扫描的角色：用户输入侧 + 工具结果（RFC-0027 A 方案：拦截 tool result）。
 # TOOL 消息的文本在 ToolResultBlock 里，scan_messages 会专门抽取（见 _extract_scan_text）。
@@ -314,11 +349,20 @@ class SensitiveWordMiddleware(Middleware):
         case_sensitive: 是否区分大小写。中文不受影响；英文敏感词建议 ``False``。
         block_input: 是否扫描 LLM 入参（``scan_roles`` 指定的角色，默认含用户/系统/框架消息 + 工具结果）。
         block_output: 是否扫描 LLM 回复正文。
-        refusal_template: 拒绝回复模板，可用 ``{source}`` / ``{category}`` /
-            ``{hits}`` 三个占位符。
+        input_action: 输入命中时的动作 (``OnHitAction``)，默认 ``mask`` (脱敏后让对话继续)。
+            老用户要保留 RFC-0027 原行为请显式传 ``"terminate"``。
+        output_action: 输出命中时的动作，默认 ``mask`` (脱敏后让对话继续)。
+        refusal_template: ``terminate`` 动作的拒绝文案模板，可用 ``{source}`` /
+            ``{category}`` / ``{hits}`` 三个占位符。
+        soft_refusal_template: ``soft_reject`` 动作的温和拒绝文案模板，占位符同
+            ``refusal_template``。
+        mask_template: ``mask`` 动作的占位符模板，可用 ``{category}`` /
+            ``{word}`` / ``{length}`` (原词长度) 占位符。默认 ``"***"`` (密码遮挡
+            通用约定, 简短中性)。需要带审计类别标签的, 显式传 ``"[<{category}>]"``;
+            想按原词长度自适应的, 传 ``"*{length}*"`` 之类。
         scan_roles: 入参扫描覆盖的 ``Role`` 集合；默认 USER/FRAMEWORK/SYSTEM/TOOL（含工具结果）。
         raise_on_block: True 时命中直接抛 ``SensitiveContentBlockedError``；
-            默认 False，走"返回拒绝文案 + force_stop_reason"的优雅路径。
+            默认 False，走"按 action 处理"的优雅路径。
     """
 
     source_id = "sensitive_word_middleware"
@@ -333,7 +377,11 @@ class SensitiveWordMiddleware(Middleware):
         case_sensitive: bool = False,
         block_input: bool = True,
         block_output: bool = True,
+        input_action: OnHitAction | str = OnHitAction.MASK,
+        output_action: OnHitAction | str = OnHitAction.MASK,
         refusal_template: str = _DEFAULT_REFUSAL_TEMPLATE,
+        soft_refusal_template: str = _DEFAULT_SOFT_REFUSAL_TEMPLATE,
+        mask_template: str = _DEFAULT_MASK_TEMPLATE,
         scan_roles: Iterable[Role] | None = None,
         raise_on_block: bool = False,
     ) -> None:
@@ -368,17 +416,23 @@ class SensitiveWordMiddleware(Middleware):
         self._case_sensitive = case_sensitive
         self._block_input = block_input
         self._block_output = block_output
+        self._input_action = OnHitAction(input_action) if not isinstance(input_action, OnHitAction) else input_action
+        self._output_action = OnHitAction(output_action) if not isinstance(output_action, OnHitAction) else output_action
         self._refusal_template = refusal_template
+        self._soft_refusal_template = soft_refusal_template
+        self._mask_template = mask_template
         self._scan_roles: frozenset[Role] = frozenset(scan_roles) if scan_roles is not None else _DEFAULT_SCAN_ROLES
         self._raise_on_block = raise_on_block
-        # RFC-0027: 由 executor 注入的统一事件发射器（命中时发 RunErrorEvent）。
+        # RFC-0027: 由 executor 注入的统一事件发射器（命中时发 ContentBlockedEvent）。
         self._event_emitter: Callable[[object], None] | None = None
 
         logger.info(
-            "[SensitiveWordMiddleware] loaded %d words; block_input=%s block_output=%s case_sensitive=%s",
+            "[SensitiveWordMiddleware] loaded %d words; block_input=%s/%s block_output=%s/%s case_sensitive=%s",
             self._lexicon_size,
             block_input,
+            self._input_action.value,
             block_output,
+            self._output_action.value,
             case_sensitive,
         )
 
@@ -448,16 +502,135 @@ class SensitiveWordMiddleware(Middleware):
         return SensitiveScanResult(hits=aggregated_hits)
 
     # ------------------------------------------------------------------
+    # Mask 文本工具
+    # ------------------------------------------------------------------
+
+    def _format_placeholder(self, hit: SensitiveHit) -> str:
+        """Render mask_template for a single hit; ignore unknown placeholders."""
+        try:
+            return self._mask_template.format(
+                category=hit.category,
+                word=hit.word,
+                length=len(hit.word),
+            )
+        except (KeyError, IndexError):
+            # mask_template 不含占位符 (如 "***") → format 返回原样
+            return self._mask_template
+
+    def _mask_text(self, text: str) -> tuple[str, SensitiveScanResult]:
+        """Scan ``text`` and return (masked_text, scan_result).
+
+        AC 命中的 ``(start, end)`` 反向遍历替换, 避开 offset 漂移。case_sensitive=False
+        时 scan 用的是 lower-case haystack, 命中的 offset 跟原文一致 (大小写不影响
+        字符数), 所以原 text 直接 [start:end] 替换是对的。
+        """
+        result = self.scan_text(text)
+        if not result.matched:
+            return text, result
+        # 多个 hit 可能重叠 (e.g. "观音" 和 "观音法门") — 取覆盖范围, 避免重复 mask
+        # 按 start 升序 / end 降序排, 跳过被前面包含的 hit
+        sorted_hits = sorted(result.hits, key=lambda h: (h.start, -h.end))
+        merged: list[SensitiveHit] = []
+        for hit in sorted_hits:
+            if merged and hit.start < merged[-1].end:
+                # 与前一个重叠; 保留更长的那个 (前一个范围更大)
+                if hit.end > merged[-1].end:
+                    # 扩展覆盖范围; word 取合并后的实际子串, 否则自定义
+                    # mask_template 里的 {word}/{length} 会渲染成旧的短词
+                    merged[-1] = SensitiveHit(
+                        word=text[merged[-1].start : hit.end],
+                        category=merged[-1].category,
+                        start=merged[-1].start,
+                        end=hit.end,
+                    )
+                continue
+            merged.append(hit)
+        # 反向替换
+        out = text
+        for hit in reversed(merged):
+            out = out[: hit.start] + self._format_placeholder(hit) + out[hit.end :]
+        return out, result
+
+    def _mask_message(self, msg: Message) -> Message | None:
+        """Return a new Message with sensitive content masked; None if no change."""
+        from nexau.core.messages import DiscriminatedBlock, ToolResultContentBlock
+
+        any_changed = False
+        new_blocks: list[DiscriminatedBlock] = []
+        for block in msg.content:
+            if isinstance(block, TextBlock):
+                masked, result = self._mask_text(block.text)
+                if result.matched:
+                    any_changed = True
+                    new_blocks.append(TextBlock(id=block.id, text=masked))
+                else:
+                    new_blocks.append(block)
+            elif isinstance(block, ToolResultBlock):
+                content = block.content
+                if isinstance(content, str):
+                    masked, result = self._mask_text(content)
+                    if result.matched:
+                        any_changed = True
+                        new_blocks.append(
+                            ToolResultBlock(
+                                tool_use_id=block.tool_use_id,
+                                content=masked,
+                                is_error=block.is_error,
+                                raw_output=block.raw_output,
+                            )
+                        )
+                    else:
+                        new_blocks.append(block)
+                else:
+                    sub_blocks: list[ToolResultContentBlock] = []
+                    sub_changed = False
+                    for inner in content:
+                        if isinstance(inner, TextBlock):
+                            masked, result = self._mask_text(inner.text)
+                            if result.matched:
+                                sub_changed = True
+                                sub_blocks.append(TextBlock(id=inner.id, text=masked))
+                            else:
+                                sub_blocks.append(inner)
+                        else:
+                            sub_blocks.append(inner)
+                    if sub_changed:
+                        any_changed = True
+                        new_blocks.append(
+                            ToolResultBlock(
+                                tool_use_id=block.tool_use_id,
+                                content=sub_blocks,
+                                is_error=block.is_error,
+                                raw_output=block.raw_output,
+                            )
+                        )
+                    else:
+                        new_blocks.append(block)
+            else:
+                new_blocks.append(block)
+        if not any_changed:
+            return None
+        return Message(
+            id=msg.id,
+            role=msg.role,
+            content=new_blocks,
+            metadata=msg.metadata,
+            created_at=msg.created_at,
+        )
+
+    # ------------------------------------------------------------------
     # Hook：before_model 拦输入，after_model 拦输出
     # ------------------------------------------------------------------
 
     def before_model(self, hook_input: BeforeModelHookInput) -> HookResult:  # type: ignore[override]
-        """Scan input messages before the LLM call; block on hit.
+        """Scan input messages before the LLM call; act per ``input_action`` on hit.
 
         RFC-0027: 输入侧拦截
 
-        命中时返回带 ``force_stop_reason`` 的 HookResult，并把拒绝文案作为末条
-        assistant 消息追加。executor 在 LLM 调用前读到 outparam 即短路、不发请求。
+        terminate: 设 force_stop_reason=ERROR_OCCURRED + 追加拒绝文案。
+        mask: 把命中的敏感词在 messages 内替换成占位符, run 继续。
+        soft_reject: 用温和拒绝文案 + force_stop_reason=SUCCESS (正常完成而不是错误),
+            同时 mask history 命中位置避免后续轮再次触发。
         """
         if not self._block_input or self._lexicon_size == 0:
             return HookResult.no_changes()
@@ -469,22 +642,37 @@ class SensitiveWordMiddleware(Middleware):
         if self._raise_on_block:
             raise SensitiveContentBlockedError(source="input", scan_result=result)
 
-        refusal = self._build_refusal(source="input", scan_result=result)
-        self._emit_blocked(agent_state=hook_input.agent_state, source="input", scan_result=result, message=refusal)
-        new_messages = list(hook_input.messages)
-        new_messages.append(Message(role=Role.ASSISTANT, content=[TextBlock(text=refusal)]))
-        return HookResult(
-            messages=new_messages,
-            force_stop_reason=AgentStopReason.ERROR_OCCURRED,
-        )
+        # 1. 事件总是发 (audit 路径与具体 action 无关)
+        notice = self._build_notice(source="input", scan_result=result, action=self._input_action)
+        self._emit_blocked(agent_state=hook_input.agent_state, source="input", scan_result=result, message=notice)
+
+        # 2. 按 action 分支
+        action = self._input_action
+        if action == OnHitAction.MASK:
+            new_messages = [self._mask_message(m) or m for m in hook_input.messages]
+            return HookResult(messages=new_messages)
+
+        if action == OnHitAction.TERMINATE:
+            new_messages = list(hook_input.messages)
+            new_messages.append(Message(role=Role.ASSISTANT, content=[TextBlock(text=notice)]))
+            return HookResult(messages=new_messages, force_stop_reason=AgentStopReason.ERROR_OCCURRED)
+
+        # SOFT_REJECT: 跳过本轮 LLM 调用 + 用温和拒绝文案; terminal_reason=SUCCESS 不是错误。
+        # 同时也 mask 历史里命中的敏感词, 避免下一轮 (用户换话题) 时 history 残留的
+        # 同一敏感词又触发 soft_reject 导致"永远聊不下去"。语义: 礼貌跳过当轮, 后续可继续。
+        new_messages = [self._mask_message(m) or m for m in hook_input.messages]
+        new_messages.append(Message(role=Role.ASSISTANT, content=[TextBlock(text=notice)]))
+        return HookResult(messages=new_messages, force_stop_reason=AgentStopReason.SUCCESS)
 
     def after_model(self, hook_input: AfterModelHookInput) -> HookResult:  # type: ignore[override]
-        """Scan visible model output after the LLM call; block on hit.
+        """Scan visible model output after the LLM call; act per ``output_action`` on hit.
 
         RFC-0027: 输出侧拦截
 
-        只扫可见正文（``original_response``），不动 reasoning。命中时用拒绝文案
-        替换违规的 assistant 末条消息（避免违规内容落库），并设置 force_stop_reason。
+        只扫可见正文（``original_response``），不动 reasoning。
+        terminate: 用拒绝文案替换违规末条 assistant 消息 + force_stop_reason=ERROR_OCCURRED。
+        mask: 把命中位置在 assistant 文本内 mask 掉, run 继续。
+        soft_reject: 用温和拒绝文案替换违规 assistant 消息 + force_stop_reason=SUCCESS。
         """
         if not self._block_output or self._lexicon_size == 0:
             return HookResult.no_changes()
@@ -497,25 +685,45 @@ class SensitiveWordMiddleware(Middleware):
         if self._raise_on_block:
             raise SensitiveContentBlockedError(source="output", scan_result=result)
 
-        refusal = self._build_refusal(source="output", scan_result=result)
-        self._emit_blocked(agent_state=hook_input.agent_state, source="output", scan_result=result, message=refusal)
-        # executor 已把违规 assistant 消息追加为末条；用拒绝文案替换它做脱敏。
+        notice = self._build_notice(source="output", scan_result=result, action=self._output_action)
+        self._emit_blocked(agent_state=hook_input.agent_state, source="output", scan_result=result, message=notice)
+
+        action = self._output_action
         messages = list(hook_input.messages)
-        refusal_msg = Message(role=Role.ASSISTANT, content=[TextBlock(text=refusal)])
+
+        if action == OnHitAction.MASK:
+            # 直接对末条 assistant 做 mask (executor 已把违规 assistant 追加为末条)
+            if messages and messages[-1].role == Role.ASSISTANT:
+                masked = self._mask_message(messages[-1]) or messages[-1]
+                messages[-1] = masked
+            return HookResult(messages=messages)
+
+        # TERMINATE / SOFT_REJECT 都用 notice 替换违规 assistant, 区别在 stop reason
+        replacement_msg = Message(role=Role.ASSISTANT, content=[TextBlock(text=notice)])
         if messages and messages[-1].role == Role.ASSISTANT:
-            messages[-1] = refusal_msg
+            messages[-1] = replacement_msg
         else:
-            messages.append(refusal_msg)
-        return HookResult(
-            messages=messages,
-            force_stop_reason=AgentStopReason.ERROR_OCCURRED,
-        )
+            messages.append(replacement_msg)
+        stop_reason = AgentStopReason.ERROR_OCCURRED if action == OnHitAction.TERMINATE else AgentStopReason.SUCCESS
+        return HookResult(messages=messages, force_stop_reason=stop_reason)
 
     # ------------------------------------------------------------------
     # 拒绝文案构造
     # ------------------------------------------------------------------
 
-    def _build_refusal(self, *, source: str, scan_result: SensitiveScanResult) -> str:
+    def _build_notice(
+        self,
+        *,
+        source: str,
+        scan_result: SensitiveScanResult,
+        action: OnHitAction,
+    ) -> str:
+        """Render the user-visible notice for a hit. Template depends on ``action``.
+
+        terminate → refusal_template (严厉拒绝)
+        soft_reject → soft_refusal_template (温和告知)
+        mask → soft_refusal_template (虽然内容继续, 但事件 message 字段仍用同款文案)
+        """
         # 1. 命中词 / 类别 preview（避免泄漏全文）
         hits_preview = ", ".join(scan_result.words[:5])
         if len(scan_result.words) > 5:
@@ -524,14 +732,20 @@ class SensitiveWordMiddleware(Middleware):
 
         # 2. 审计日志
         logger.warning(
-            "[SensitiveWordMiddleware] BLOCKED source=%s categories=%s hits=[%s]",
+            "[SensitiveWordMiddleware] HIT source=%s action=%s categories=%s hits=[%s]",
             source,
+            action.value,
             category_preview,
             hits_preview,
         )
 
-        # 3. 渲染拒绝文案
-        return self._refusal_template.format(
+        # 3. 选模板
+        if action == OnHitAction.TERMINATE:
+            template = self._refusal_template
+        else:
+            template = self._soft_refusal_template
+
+        return template.format(
             source="用户输入" if source == "input" else "模型输出",
             category=category_preview,
             hits=hits_preview,
@@ -577,6 +791,7 @@ class SensitiveWordMiddleware(Middleware):
 
 
 __all__ = [
+    "OnHitAction",
     "SensitiveContentBlockedError",
     "SensitiveHit",
     "SensitiveScanResult",

@@ -271,8 +271,9 @@ class TestBeforeModel:
         assert result.force_stop_reason is None
         assert result.messages is None  # 无改动
 
-    def test_blocks_on_input_hit(self) -> None:
-        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"])
+    def test_blocks_on_input_hit_terminate(self) -> None:
+        # 显式选 terminate 保留 RFC-0027 原行为 (默认已改 mask)
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], input_action="terminate")
         result = mw.before_model(_before_input([_user("这里有禁词")]))
         # 1. 设置强制停止信号
         assert result.force_stop_reason is AgentStopReason.ERROR_OCCURRED
@@ -308,8 +309,9 @@ class TestAfterModel:
         assert result.force_stop_reason is None
         assert result.messages is None
 
-    def test_blocks_on_output_hit_and_redacts(self) -> None:
-        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"])
+    def test_blocks_on_output_hit_and_redacts_terminate(self) -> None:
+        # 显式选 terminate 保留 RFC-0027 原行为
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], output_action="terminate")
         # executor 已把违规 assistant 末条追加
         msgs = [_user("正常问题"), _assistant("模型偷偷说了禁词")]
         result = mw.after_model(_after_output(msgs, original_response="模型偷偷说了禁词"))
@@ -354,7 +356,8 @@ class TestEventEmit:
         )
 
     def test_stop_reason_is_error_occurred(self) -> None:
-        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"])
+        # terminate 才会设 ERROR_OCCURRED; 默认 mask 不会
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], input_action="terminate")
         result = mw.before_model(self._hook_input("r1", "含禁词"))
         assert result.force_stop_reason is AgentStopReason.ERROR_OCCURRED
 
@@ -374,7 +377,8 @@ class TestEventEmit:
 
     def test_no_emit_without_emitter(self) -> None:
         # 未装载事件中间件（无 emitter）时静默跳过，不报错
-        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"])
+        # 显式选 terminate 以验证 ERROR_OCCURRED 仍生效
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], input_action="terminate")
         result = mw.before_model(self._hook_input("r1", "含禁词"))
         assert result.force_stop_reason is AgentStopReason.ERROR_OCCURRED  # 仍然拦截
 
@@ -384,6 +388,273 @@ class TestEventEmit:
         mw.set_event_emitter(captured.append)
         mw.before_model(self._hook_input("r1", "天气真好"))
         assert captured == []
+
+
+# ---------------------------------------------------------------------------
+# OnHitAction: mask — 替换敏感词后 run 继续 (默认动作)
+# ---------------------------------------------------------------------------
+
+
+class TestMaskAction:
+    def test_default_action_is_mask(self) -> None:
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"])
+        result = mw.before_model(_before_input([_user("这里有禁词请别拦")]))
+        # mask 不设 force_stop_reason, run 继续
+        assert result.force_stop_reason is None
+        assert result.messages is not None
+        masked = result.messages[-1].get_text_content()
+        # 敏感词被替换
+        assert "禁词" not in masked
+        # 上下文保留
+        assert "这里有" in masked
+        assert "请别拦" in masked
+
+    def test_mask_input_uses_star_placeholder_by_default(self) -> None:
+        # 默认 mask_template = "***" (密码遮挡通用约定)
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], input_action="mask")
+        result = mw.before_model(_before_input([_user("这里有禁词")]))
+        assert result.messages is not None
+        masked = result.messages[0].get_text_content()
+        assert "***" in masked
+        assert "禁词" not in masked
+
+    def test_mask_input_opt_in_category_label_template(self) -> None:
+        # 显式传 "[<{category}>]" opt-in 类别审计标签 (取代旧默认值)
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["禁词"],
+            input_action="mask",
+            mask_template="[<{category}>]",
+        )
+        result = mw.before_model(_before_input([_user("这里有禁词")]))
+        assert result.messages is not None
+        assert "[<explicit>]" in result.messages[0].get_text_content()
+
+    def test_mask_input_custom_template(self) -> None:
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["禁词"],
+            input_action="mask",
+            mask_template="***",
+        )
+        result = mw.before_model(_before_input([_user("这里有禁词")]))
+        assert result.messages is not None
+        assert "***" in result.messages[0].get_text_content()
+        assert "禁词" not in result.messages[0].get_text_content()
+
+    def test_mask_output_replaces_in_assistant_message(self) -> None:
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], output_action="mask")
+        msgs = [_user("正常"), _assistant("模型偷偷说了禁词后又说了正常话")]
+        result = mw.after_model(_after_output(msgs, original_response="模型偷偷说了禁词后又说了正常话"))
+        assert result.force_stop_reason is None  # mask 不终止
+        assert result.messages is not None
+        last = result.messages[-1].get_text_content()
+        assert "禁词" not in last
+        # mask 保留了 assistant 的正常内容,而不是整段被拒绝文案替换
+        assert "模型偷偷说了" in last
+        assert "后又说了正常话" in last
+
+    def test_mask_handles_overlapping_hits(self) -> None:
+        # 覆盖 "观音" 和 "观音法门" 重叠场景
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["观音", "观音法门"],
+            input_action="mask",
+            mask_template="***",
+        )
+        result = mw.before_model(_before_input([_user("听说观音法门很神秘")]))
+        assert result.messages is not None
+        masked = result.messages[0].get_text_content()
+        # 重叠的两个 hit 合并成一个 mask 区, 不重复 mask
+        assert masked.count("***") == 1
+        assert "观音" not in masked
+        assert "听说" in masked
+        assert "很神秘" in masked
+
+    def test_mask_overlapping_hits_word_placeholder_uses_merged_span(self) -> None:
+        # 重叠 hit 合并后, {word}/{length} 模板应渲染合并后的完整子串,
+        # 而不是前一个较短的词 ("观音")
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["观音", "观音法门"],
+            input_action="mask",
+            mask_template="[{word}:{length}]",
+        )
+        result = mw.before_model(_before_input([_user("听说观音法门很神秘")]))
+        assert result.messages is not None
+        masked = result.messages[0].get_text_content()
+        assert "[观音法门:4]" in masked
+        assert "[观音:2]" not in masked
+
+    def test_mask_preserves_other_messages(self) -> None:
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], input_action="mask")
+        result = mw.before_model(_before_input([_user("第一条干净"), _user("第二条有禁词"), _user("第三条也干净")]))
+        assert result.messages is not None
+        assert "第一条干净" in result.messages[0].get_text_content()
+        # 第二条的敏感词被替换
+        assert "禁词" not in result.messages[1].get_text_content()
+        assert "第二条有" in result.messages[1].get_text_content()
+        assert "第三条也干净" in result.messages[2].get_text_content()
+
+    def test_mask_tool_result_str_content(self) -> None:
+        # ToolResultBlock.content 是 str 的 case
+        from nexau.core.messages import ToolResultBlock
+
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["出售雷管"],
+            input_action="mask",
+            mask_template="***",
+        )
+        tool_msg = Message(
+            role=Role.TOOL,
+            content=[
+                ToolResultBlock(
+                    tool_use_id="t1",
+                    content="搜索结果：有人出售雷管",
+                    raw_output={"rows": [1, 2, 3]},
+                )
+            ],
+        )
+        result = mw.before_model(_before_input([tool_msg]))
+        assert result.force_stop_reason is None
+        assert result.messages is not None
+        new_msg = result.messages[0]
+        new_tool_block = new_msg.content[0]
+        assert isinstance(new_tool_block, ToolResultBlock)
+        assert new_tool_block.content == "搜索结果：有人***"
+        assert new_tool_block.tool_use_id == "t1"
+        # 脱敏后仍保留结构化 raw_output, 以及原消息的 id/created_at
+        assert new_tool_block.raw_output == {"rows": [1, 2, 3]}
+        assert new_msg.id == tool_msg.id
+        assert new_msg.created_at == tool_msg.created_at
+
+    def test_mask_tool_result_list_content(self) -> None:
+        # ToolResultBlock.content 是 list[TextBlock] 的 case
+        from nexau.core.messages import ToolResultBlock
+
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["出售雷管"],
+            input_action="mask",
+            mask_template="***",
+        )
+        tool_msg = Message(
+            role=Role.TOOL,
+            content=[
+                ToolResultBlock(
+                    tool_use_id="t1",
+                    content=[TextBlock(text="出售雷管渠道"), TextBlock(text="干净文本")],
+                    raw_output={"rows": [1, 2, 3]},
+                )
+            ],
+        )
+        result = mw.before_model(_before_input([tool_msg]))
+        assert result.force_stop_reason is None
+        assert result.messages is not None
+        new_tool_block = result.messages[0].content[0]
+        assert isinstance(new_tool_block, ToolResultBlock)
+        assert isinstance(new_tool_block.content, list)
+        # list content 分支同样保留 raw_output
+        assert new_tool_block.raw_output == {"rows": [1, 2, 3]}
+        # 第 1 个 inner block 被 mask, 第 2 个干净 block 保持原样
+        first = new_tool_block.content[0]
+        assert isinstance(first, TextBlock)
+        assert first.text == "***渠道"
+        second = new_tool_block.content[1]
+        assert isinstance(second, TextBlock)
+        assert second.text == "干净文本"
+
+    def test_mask_tool_result_clean_content_no_change(self) -> None:
+        # ToolResultBlock 内容无命中时该 message 原样保留 (any_changed=False 路径)
+        from nexau.core.messages import ToolResultBlock
+
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], input_action="mask")
+        clean_tool = ToolResultBlock(tool_use_id="t1", content="完全干净")
+        tool_msg = Message(role=Role.TOOL, content=[clean_tool])
+        result = mw.before_model(_before_input([_user("含禁词"), tool_msg]))
+        assert result.messages is not None
+        # tool_msg 没命中, 整个 Message 原样返回 (走 any_changed=False 路径)
+        assert result.messages[1].content[0] is clean_tool
+
+
+# ---------------------------------------------------------------------------
+# OnHitAction: soft_reject — 温和拒绝, terminal_reason=SUCCESS 不是错误
+# ---------------------------------------------------------------------------
+
+
+class TestSoftRejectAction:
+    def test_soft_reject_input_uses_success_not_error(self) -> None:
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], input_action="soft_reject")
+        result = mw.before_model(_before_input([_user("含禁词")]))
+        # 关键: SUCCESS 不是 ERROR_OCCURRED
+        assert result.force_stop_reason is AgentStopReason.SUCCESS
+        assert result.messages is not None
+        last = result.messages[-1].get_text_content()
+        # 温和文案,不是错误式的
+        assert "不便回答" in last or "跳过" in last
+
+    def test_soft_reject_output_replaces_assistant(self) -> None:
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], output_action="soft_reject")
+        msgs = [_user("正常"), _assistant("模型说了禁词")]
+        result = mw.after_model(_after_output(msgs, original_response="模型说了禁词"))
+        assert result.force_stop_reason is AgentStopReason.SUCCESS
+        assert result.messages is not None
+        last = result.messages[-1].get_text_content()
+        assert "禁词" not in last
+        # 整条 assistant 被替换 (不是 mask 那种保留正常部分)
+        assert "模型说了" not in last
+
+    def test_soft_reject_masks_history_to_avoid_repeat_trigger(self) -> None:
+        """soft_reject 入口必须 mask 历史里命中的敏感词, 否则下一轮 history 残留
+        会再次触发 soft_reject 导致"永远聊不下去"。
+        """
+        mw = SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"], input_action="soft_reject")
+        # 模拟第一轮 user 命中
+        result = mw.before_model(_before_input([_user("我想问禁词")]))
+        assert result.messages is not None
+        assert result.force_stop_reason is AgentStopReason.SUCCESS
+        # 关键: 返回的 messages 里 user 已经被 mask, 不再含原敏感词
+        # (这些 messages 会被持久化, 下轮再扫不会触发同一敏感词)
+        assert all("禁词" not in m.get_text_content() for m in result.messages if m.role == Role.USER)
+        # 末条仍是温和拒绝
+        assert result.messages[-1].role == Role.ASSISTANT
+        assert "不便回答" in result.messages[-1].get_text_content() or "跳过" in result.messages[-1].get_text_content()
+
+    def test_soft_reject_custom_template(self) -> None:
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["禁词"],
+            input_action="soft_reject",
+            soft_refusal_template="本话题不能聊喔, 换个问法试试 (命中 {hits})",
+        )
+        result = mw.before_model(_before_input([_user("说点禁词")]))
+        assert result.messages is not None
+        last = result.messages[-1].get_text_content()
+        assert "本话题不能聊喔" in last
+        assert "禁词" in last  # hits preview
+
+
+# ---------------------------------------------------------------------------
+# Action 不同组合: input/output 各自独立
+# ---------------------------------------------------------------------------
+
+
+class TestActionMixing:
+    def test_input_mask_output_terminate(self) -> None:
+        # input 路径 mask, output 路径 terminate — 各自独立生效
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["禁词"],
+            input_action="mask",
+            output_action="terminate",
+        )
+        # input: mask, 不终止
+        r_in = mw.before_model(_before_input([_user("含禁词")]))
+        assert r_in.force_stop_reason is None
+        # output: terminate, ERROR_OCCURRED
+        r_out = mw.after_model(_after_output([_user("正常"), _assistant("禁词")], original_response="禁词"))
+        assert r_out.force_stop_reason is AgentStopReason.ERROR_OCCURRED
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +677,15 @@ class TestExecutorIntegration:
                 name="sw_agent",
                 llm_config=LLMConfig(model="gpt-4o-mini"),
                 tool_call_mode="openai",
-                middlewares=[SensitiveWordMiddleware(lexicon_dir=None, lexicon_words=["禁词"])],
+                middlewares=[
+                    SensitiveWordMiddleware(
+                        lexicon_dir=None,
+                        lexicon_words=["禁词"],
+                        # 这些 e2e 测试验证 RFC-0027 终止短路, 显式选 terminate
+                        input_action="terminate",
+                        output_action="terminate",
+                    )
+                ],
             )
             return Agent(config=config)
 
