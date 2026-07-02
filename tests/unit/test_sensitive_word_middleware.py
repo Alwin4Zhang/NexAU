@@ -338,6 +338,23 @@ class TestAfterModel:
             mw.after_model(_after_output(msgs, original_response="模型禁词"))
         assert exc.value.source == "output"
 
+    def test_output_mask_variable_length_char_does_not_shift_offset(self) -> None:
+        # 同 İ 根因也影响 after_model 的 mask 路径: 输出侧脱敏同样走 _mask_text
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["法轮功"],
+            output_action="mask",
+            mask_template="***",
+        )
+        leak = "İİİ法轮功"
+        msgs = [_user("正常问题"), _assistant(leak)]
+        result = mw.after_model(_after_output(msgs, original_response=leak))
+        assert result.force_stop_reason is None
+        assert result.messages is not None
+        last = result.messages[-1].get_text_content()
+        assert "法轮功" not in last
+        assert last == "İİİ***"
+
 
 # ---------------------------------------------------------------------------
 # 停止原因 = ERROR_OCCURRED + 命中即时发 RunErrorEvent
@@ -484,6 +501,37 @@ class TestMaskAction:
         assert result.messages is not None
         masked = result.messages[0].get_text_content()
         assert "[观音法门:4]" in masked
+
+    def test_mask_variable_length_lowercase_char_does_not_shift_offset(self) -> None:
+        # 安全回归: "İ" (U+0130).lower() → "i̇" (2 码点)。若用 str.lower() 算 offset
+        # 再切原文, 每个 İ 让 mask 右移一位; 垫词长个 İ 即可把违禁词整块推出 mask 区,
+        # 原样进 LLM/history。保长归一后 offset 必须对齐, 违禁词被真正 mask 掉。
+        assert len("İ".lower()) == 2  # 前提: 该字符 lower 后确实变长
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["法轮功"],
+            input_action="mask",
+            mask_template="***",
+        )
+        result = mw.before_model(_before_input([_user("İİİ法轮功")]))
+        assert result.messages is not None
+        masked = result.messages[0].get_text_content()
+        assert "法轮功" not in masked
+        assert masked == "İİİ***"
+
+    def test_mask_case_insensitive_still_works_after_length_preserving_fold(self) -> None:
+        # 保长归一不能破坏原有的英文大小写不敏感匹配
+        mw = SensitiveWordMiddleware(
+            lexicon_dir=None,
+            lexicon_words=["falun"],
+            input_action="mask",
+            mask_template="***",
+        )
+        result = mw.before_model(_before_input([_user("say FALUN loudly")]))
+        assert result.messages is not None
+        masked = result.messages[0].get_text_content()
+        assert "FALUN" not in masked
+        assert masked == "say *** loudly"
         assert "[观音:2]" not in masked
 
     def test_mask_preserves_other_messages(self) -> None:

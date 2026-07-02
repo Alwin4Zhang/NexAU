@@ -260,6 +260,30 @@ class _AhoCorasick:
 
 
 # ---------------------------------------------------------------------------
+# 大小写归一（保长）
+# ---------------------------------------------------------------------------
+
+
+def _casefold_lower(text: str) -> str:
+    """Length-preserving lowercase for case-insensitive matching.
+
+    RFC-0027 安全修复：``str.lower()`` 对个别 Unicode 字符会**改变码点数**——
+    唯一常见反例是 ``"İ"``（U+0130）``.lower()`` → ``"i̇"``（``i`` + U+0307 组合点，
+    2 个码点）。敏感词 mask 用 lower 串上的 AC 命中 offset 去切**原文**，一旦出现这类
+    变长字符，offset 相对原文右移，mask 窗口被推离目标词——垫 L 个 ``İ``（L=词长）即可
+    把违禁词整块推出 mask 区、原样进 LLM 与 history。
+
+    这里逐字符归一并强制 **1:1**：若 ``ch.lower()`` 不是单码点则保留原字符，保证归一串
+    与原文逐位对齐，AC offset 可直接用于原文切片。词库归一必须走同一函数，否则命中条件不一致。
+    """
+    out: list[str] = []
+    for ch in text:
+        low = ch.lower()
+        out.append(low if len(low) == 1 else ch)
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
 # 词库加载
 # ---------------------------------------------------------------------------
 
@@ -286,7 +310,7 @@ def _load_lexicon(
     out: dict[str, str] = {}
 
     def _normalize(word: str) -> str:
-        return word if case_sensitive else word.lower()
+        return word if case_sensitive else _casefold_lower(word)
 
     def _put(word: str, category: str) -> None:
         norm = _normalize(word.strip())
@@ -451,7 +475,7 @@ class SensitiveWordMiddleware(Middleware):
         """
         if not text or self._lexicon_size == 0:
             return SensitiveScanResult()
-        haystack = text if self._case_sensitive else text.lower()
+        haystack = text if self._case_sensitive else _casefold_lower(text)
         return SensitiveScanResult(hits=self._automaton.scan(haystack))
 
     @staticmethod
@@ -521,8 +545,9 @@ class SensitiveWordMiddleware(Middleware):
         """Scan ``text`` and return (masked_text, scan_result).
 
         AC 命中的 ``(start, end)`` 反向遍历替换, 避开 offset 漂移。case_sensitive=False
-        时 scan 用的是 lower-case haystack, 命中的 offset 跟原文一致 (大小写不影响
-        字符数), 所以原 text 直接 [start:end] 替换是对的。
+        时 scan 用的是归一后的 haystack; 归一走 :func:`_casefold_lower`（**保长** 1:1），
+        故命中 offset 与原文逐位对齐, 原 text 直接 ``[start:end]`` 替换是对的。
+        （注: 不能用 ``str.lower()``——``"İ"`` 等字符会展开码点使 offset 漂移, 违禁词可绕过 mask。）
         """
         result = self.scan_text(text)
         if not result.matched:
