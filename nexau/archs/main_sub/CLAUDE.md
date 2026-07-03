@@ -370,6 +370,23 @@ sub_agents:
     tools: [...]
 ```
 
+### Stopping Agents
+
+When a user / transport requests `agent.stop()`:
+
+1. **`Agent._interrupt`** sets `executor.force_stop()`, which:
+   - Sets the current executor's `stop_signal=True` + `_shutdown_event.set()` + `_message_available.set()`.
+   - **Recursively propagates** to every `Agent` in `subagent_manager.running_sub_agents`, calling each sub-agent's `executor._force_stop(visited)`. The `visited` set guards against cycles in pathological executor graphs.
+2. The main loop (`execute_async`) checks `stop_signal` at each iteration boundary and exits to the persistence path.
+3. **`_await_with_shutdown_race`** wraps tool / sub-agent awaits in `_execute_parsed_calls_async`. On stop, it cancels the awaitable within one ~50ms poll, so the main agent returns promptly without waiting for the long tool / sub-agent to complete naturally.
+
+**Limitations**:
+
+- `asyncio.to_thread` workers cannot be interrupted (Python GIL). A sync tool that has already entered worker code runs to completion. Sub-agents in this state still exit at their next iteration boundary because the propagated `stop_signal` is checked at each loop iteration.
+- LLM streaming responses already-in-flight finish reading before the next iteration check. The token budget is not reclaimed mid-stream.
+
+`force=True` path (`Agent._interrupt(force=True)`) skips the graceful wait and runs `executor.cleanup()` immediately, which also shuts down sub-agents via `subagent_manager.shutdown()`.
+
 ### HistoryList (`history_list.py`)
 
 A list that automatically persists modifications to SessionManager.

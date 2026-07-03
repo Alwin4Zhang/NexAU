@@ -1882,6 +1882,60 @@ class Executor:
         )
         return processed_response, should_stop, stop_tool_result, current_messages, execution_feedbacks, ask_outcomes
 
+    async def _await_with_shutdown_race(
+        self,
+        awaitable: Any,
+        *,
+        poll_interval: float = 0.05,
+    ) -> tuple[Any, bool]:
+        """Await ``awaitable`` while watching ``_shutdown_event``; cancel on stop.
+
+        生产现象 (NAC 数据局): 用户点停止后, 主 agent 仍在 await 长 tool / sub-agent
+        的 future, 要等当前 tool 自然返回主循环才下个边界检查 stop_signal。
+        本 helper 让主 agent 不再卡: shutdown_event 触发立即 cancel awaitable,
+        主循环下个边界检测 stop_signal 退出, 走持久化路径。
+
+        注意: 通过 ``asyncio.to_thread`` 创建的 future 被 cancel 只是 detach 主侧引用,
+        worker 线程内的同步代码无法从外部中断 (Python 限制)。但 sub-agent 已通过
+        ``Executor.force_stop`` 收到 stop_signal, 会在自己下个 iteration 边界退出。
+
+        Returns:
+            (result, False): awaitable 正常完成 (含 awaitable 自身已 handle shutdown
+                后正常返回 error tuple 的情况, 如 _run_tool 入口的 shutdown emit 路径)
+            (None, True): shutdown_event 触发且 awaitable 仍卡住, 已被 race cancel
+        """
+        # NOTE 不在进入时立即短路: awaitable (如 _run_tool) 自己有 shutdown 检查 +
+        # _emit_tool_error_result 副作用, 提前 cancel 会跳过 emit 让事件流缺失。
+        # 给 awaitable 至少一轮 poll 的执行机会, 它能自己处理就让它处理。
+        task = asyncio.ensure_future(awaitable)
+
+        # 循环短轮询: shield 保护 task 不被 wait_for 的 timeout 真 cancel,
+        # timeout 仅做时间盒, 由我们自己在循环顶判 shutdown 决定是否 cancel。
+        # 仅当 awaitable 自己卡住 (asyncio.to_thread 跑长 tool / sub-agent) 时,
+        # shutdown_event 触发我们才主动 race cancel, 让主循环边界退出。
+        while not task.done():
+            try:
+                result = await asyncio.wait_for(asyncio.shield(task), timeout=poll_interval)
+                return result, False
+            except TimeoutError:
+                if self._shutdown_event.is_set():
+                    task.cancel()
+                    # 必须 await 让 task 的 CancelledError 被消费,
+                    # 否则 asyncio 会丢 "Task was destroyed but it is pending" warning,
+                    # 也避免 task 内 ensure_future 的 children (如 gather) 的 cancel 链路泄漏。
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    return None, True
+                continue
+        # task 在第一次轮询前已完成; 极端 race 下 task 可能已被外层 cancel,
+        # task.result() 抛 CancelledError; 视同 interrupted。
+        try:
+            return task.result(), False
+        except asyncio.CancelledError:
+            return None, True
+
     async def _execute_parsed_calls_async(
         self,
         parsed_response: ParsedResponse,
@@ -2111,7 +2165,12 @@ class Executor:
 
         # 先执行 serial tools（顺序）
         for tc in serial_tasks:
-            all_results.append(await _run_tool(tc))
+            # shutdown_event 触发立即 cancel 当前 tool, 跳过剩余 serial / parallel,
+            # 主循环边界查 stop_signal 退出走持久化（"放弃 tool 结果立刻停"）。
+            serial_result, interrupted = await self._await_with_shutdown_race(_run_tool(tc))
+            if interrupted:
+                return processed_response, False, None, [], []
+            all_results.append(serial_result)
 
         # 再并行执行剩余 tools
         # 维护 call_origins 与 parallel_coros 索引一一对应，gather 异常时保留调用上下文
@@ -2122,7 +2181,18 @@ class Executor:
             call_origins.append(("tool", tc))
 
         if parallel_coros:
-            parallel_results = await asyncio.gather(*parallel_coros, return_exceptions=True)
+            # gather 整体也走 shutdown race。注: return_exceptions=True 只影响 children
+            # 自己抛异常的情况; 当我们从外部 cancel gather wrapper 时, gather 自身抛
+            # CancelledError, 并把 cancel 信号向 children 传播 (cpython behavior, 见
+            # asyncio.gather() docs 的 "If gather() is cancelled, all submitted
+            # awaitables that have not completed yet are also cancelled.")。
+            # 不可中断的部分: children 内的 asyncio.to_thread 主侧 detach, worker 线程
+            # 跑完它当前的 sync 调用 (Python 限制); sub-agent worker 由 force_stop 已传
+            # 的 stop_signal 在自己下个 iteration 边界退出, 资源/token 跟着止血。
+            gather_result, interrupted = await self._await_with_shutdown_race(asyncio.gather(*parallel_coros, return_exceptions=True))
+            if interrupted:
+                return processed_response, False, None, [], []
+            parallel_results = cast(list[Any], gather_result)
             for idx, r in enumerate(parallel_results):
                 if isinstance(r, BaseException):
                     _, origin_call = call_origins[idx]
@@ -2715,10 +2785,34 @@ class Executor:
         RFC-0002: 强制停止 team_mode 下的永久运行循环
 
         Sets stop_signal and wakes the message wait so the loop exits immediately.
+        同时把停止信号递归下发到所有 running sub-agents 的 executor，避免父 stop
+        时子循环仍在跑（生产现象：sub-agent 跑完才停）。
         """
+        self._force_stop(set())
+
+    def _force_stop(self, visited_executor_ids: set[int]) -> None:
+        """Force-stop this executor and propagate to running sub-agents.
+
+        RFC-0002: 递归停止 running sub-agents
+
+        visited_executor_ids 防止异常 executor graph 出现环时递归爆栈。
+        """
+        executor_id = id(self)
+        if executor_id in visited_executor_ids:
+            return
+        visited_executor_ids.add(executor_id)
+
+        # 1. 本 executor 立即退出
         self.stop_signal = True
         self._shutdown_event.set()
         self._message_available.set()
+
+        # 2. 向下传播到所有 running sub-agents；先取快照，避免 finally 路径 pop 时中断遍历。
+        for sub_agent in list(self.subagent_manager.running_sub_agents.values()):
+            try:
+                sub_agent.executor._force_stop(visited_executor_ids)
+            except Exception as e:
+                logger.warning(f"propagate force_stop to sub-agent {sub_agent.agent_id} failed: {e}")
 
     def cleanup(self) -> None:
         """Clean up executor resources."""

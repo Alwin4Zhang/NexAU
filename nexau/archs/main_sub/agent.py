@@ -1885,9 +1885,9 @@ class Agent:
         """
         logger.info(f"🛑 Stopping agent '{self.config.name}' (force={force})...")
 
-        # 1. 设置中断信号
-        self.executor.stop_signal = True
-        self.executor.shutdown_event.set()
+        # 1. 设置中断信号并唤醒 executor；force_stop 会递归下发给所有 running sub-agents，
+        # 避免 graceful 路径下子 executor 收不到信号、卡到 timeout 才被 cleanup。
+        self.executor.force_stop()
 
         if force:
             # 2a. 立即停止：硬清理 executor

@@ -63,6 +63,11 @@ class SubAgentManager:
         self.session_id = session_id
         self.xml_parser = XMLParser()
         self._shutdown_event = threading.Event()
+        # Thread-safety: 写入路径 (call_sub_agent / call_sub_agent_async 的 register
+        # + finally pop) 都在 sub-agent lifecycle methods 中, 走的是同一 event loop
+        # 或同一 worker thread; 读取路径 (Executor.force_stop 的递归传播) 用
+        # list(running_sub_agents.values()) 做 GIL-原子快照后再迭代, 避免
+        # iteration-during-mutation 问题。无显式锁。
         self.running_sub_agents: dict[str, Agent] = {}
 
     def call_sub_agent(
