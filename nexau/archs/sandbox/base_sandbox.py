@@ -780,6 +780,17 @@ class BaseSandbox(ABC):
 
         Returns:
             True if file exists, False otherwise
+
+        Raises:
+            Exception: Implementations should only return False when the path
+                verifiably does not exist, and propagate infrastructure
+                failures (connection errors, timeouts, permission issues)
+                instead of swallowing them into False — a swallowed connection
+                error reads as "file not found" and misleads callers
+                (NAC#1304). E2BSandbox follows this contract; LocalSandbox
+                currently still returns False on any error (local ``Path``
+                checks do not hit connection failures, so the divergence is
+                benign; alignment tracked separately).
         """
         pass
 

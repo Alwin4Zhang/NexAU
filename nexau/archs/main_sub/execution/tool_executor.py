@@ -280,7 +280,18 @@ class ToolExecutor:
                 result = self.middleware_manager.wrap_tool_call(call_params, _execute_tool_call)
             else:
                 result = _execute_tool_call(call_params)
-            logger.info(f"✅ Tool '{tool_name}' executed successfully")
+            # NAC#1304: Tool.execute() 把工具内异常兜成 error dict 正常返回，
+            # 一律打 "✅ executed successfully" 会在排障时掩盖真实故障
+            # （曾误导 Connection refused 事故的定位）。按返回值区分日志语义。
+            if isinstance(result, dict):
+                result_view = cast(JsonDict, result)
+                is_error_result = bool(result_view.get("error")) or result_view.get("status") == "error"
+            else:
+                is_error_result = False
+            if is_error_result:
+                logger.info(f"⚠️ Tool '{tool_name}' returned an error result")
+            else:
+                logger.info(f"✅ Tool '{tool_name}' executed successfully")
         except (AskPermission, PermissionDenied):
             # RFC-0019: 权限异常不拦截，直接传播给 Executor 处理
             raise

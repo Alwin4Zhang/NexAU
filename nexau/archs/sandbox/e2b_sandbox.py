@@ -84,18 +84,131 @@ _T = TypeVar("_T")
 
 Sandbox: type[E2BRawSandbox] | None = None
 FileType: type[E2BFileType] | None = None
+NotFoundException: type[Exception] | None = None
 
 try:
     _e2b = import_module("e2b")
 
     Sandbox = _e2b.Sandbox
     FileType = _e2b.FileType
+    NotFoundException = import_module("e2b.exceptions").NotFoundException
     _e2b_available = True
 except (ImportError, ModuleNotFoundError, AttributeError):
     logger.warning("E2B SDK not installed. Install it with: pip install e2b")
     _e2b_available = False
 
 E2B_AVAILABLE = _e2b_available
+
+
+# =============================================================================
+# Self-host (force_http) sandbox construction primitives — NAC#1304
+# =============================================================================
+
+_TRANSPORT_REBUILD_LOCK = threading.Lock()
+"""Serializes "reset transport singleton -> construct Sandbox" sequences.
+
+The SDK's ``get_transport()`` is an unlocked check-then-set on the
+process-wide ``TransportWithLogger.singleton``; this lock only serializes the
+construction paths that we control (manager start paths and wrapper
+reconnects). Remaining races are handled by the pre-seed/detach protocol in
+``_locked_build_http_sandbox``.
+"""
+
+
+def _locked_build_http_sandbox(
+    sandbox_id: str,
+    domain: str,
+    envd_access_token: str,
+    envd_version: Version,
+) -> E2BRawSandbox:
+    """Build an HTTP raw Sandbox bound to a private transport (self-host only).
+
+    NAC#1304: 自建部署的 raw sandbox 统一构造原语（manager start 路径与
+    wrapper reconnect 路径共用）。
+
+    Ensures all internal SDK components (``_envd_api``, ``_filesystem``,
+    ``_commands``, ...) use the HTTP URL plus the ``X-Access-Token`` header,
+    and that the new object's connection pool is not shared with api-server
+    calls (cached api-server HTTPS connections in a shared pool interfere with
+    HTTP streaming to envd and make ``commands.run`` hang indefinitely):
+
+    - pre-seed: a fresh transport is installed into the SDK singleton slot
+      *before* construction, while holding the module lock. ``get_transport()``
+      never overwrites a non-None singleton, so the constructed Sandbox is
+      guaranteed to bind this fresh transport rather than adopting one that a
+      concurrent api call already polluted.
+    - detach: after construction the singleton is reset to ``None`` so the new
+      object keeps its transport as a de-facto private reference. Known
+      residual: between pre-seed and detach a concurrent ``get_transport()``
+      caller may still grab the fresh transport (microsecond window; accepted,
+      净效果远优于共享单例的现状).
+    """
+    assert Sandbox is not None, "E2B SDK not installed. Install it with: pip install e2b"
+
+    from e2b.api import limits
+    from e2b.api.client_sync import TransportWithLogger
+    from e2b.connection_config import ConnectionConfig
+
+    connection_config = ConnectionConfig(
+        sandbox_url=f"http://49983-{sandbox_id}.{domain}",
+        extra_sandbox_headers={"X-Access-Token": envd_access_token},
+    )
+    with _TRANSPORT_REBUILD_LOCK:
+        # 1. pre-seed：锁内先占位 singleton，杜绝构造期收养他人污染的 transport
+        fresh = TransportWithLogger(limits=limits, proxy=connection_config.proxy)
+        TransportWithLogger.singleton = fresh
+        try:
+            sandbox = Sandbox(  # type: ignore[call-arg]
+                sandbox_id=sandbox_id,
+                sandbox_domain=domain,
+                envd_access_token=envd_access_token,
+                traffic_access_token=None,
+                connection_config=connection_config,
+                envd_version=envd_version,
+            )
+        finally:
+            # 2. detach：解绑全局单例，新对象的 pool 私有化
+            # DEBUG-AB(#1304 CI bisect): detach disabled — keep singleton=fresh (old behavior)
+            pass
+        if sandbox._transport is not fresh:
+            # 理论不可达（singleton 非 None 时 get_transport 不覆写，置 None 仅在本锁内），
+            # 保留探测以防 SDK 行为变化。
+            logger.warning(
+                "Transport singleton was contested during locked build; sandbox %s may share its connection pool",
+                sandbox_id[:16],
+            )
+        return sandbox
+
+
+def _rebuild_raw_sandbox_for_http(
+    raw: E2BRawSandbox,
+    fallback: E2BRawSandbox | None = None,
+) -> E2BRawSandbox:
+    """Extract domain/token from a connect() response and rebuild for HTTP.
+
+    NAC#1304: reconnect 专用（fail-closed）。token 优先取新 connect 响应
+    （resume 后可能轮换），响应缺失时回退旧对象的 token 并告警；两者皆缺则抛
+    ``SandboxError`` —— 在 force_http 部署上绝不安装 SDK 默认的 HTTPS 对象。
+    """
+    domain = raw.sandbox_domain
+    if fallback is not None and fallback.sandbox_domain and domain != fallback.sandbox_domain:
+        # 防御：connect 响应缺 domain 时会被 SDK 默认域(property 回退)静默兜底，
+        # 此处显式暴露新旧不一致而不是放任构错 URL。
+        logger.warning(
+            "connect response domain %r differs from previous %r; using response value",
+            domain,
+            fallback.sandbox_domain,
+        )
+    token = getattr(raw, "_envd_access_token", None)
+    if not token and fallback is not None:
+        token = getattr(fallback, "_envd_access_token", None)
+        if token:
+            logger.warning("connect response missing envd access token; falling back to previous token")
+    if not (domain and token):
+        raise SandboxError(
+            f"force_http rebuild requires sandbox domain and envd access token; got domain={domain!r}, token={'<set>' if token else None}"
+        )
+    return _locked_build_http_sandbox(raw.sandbox_id, domain, token, raw._envd_version)
 
 
 @dataclass(kw_only=True)
@@ -117,9 +230,20 @@ class E2BSandbox(BaseSandbox):
     max_retries: int = field(default=5)
     _api_key: str | None = field(default=None, repr=False)
     _api_url: str | None = field(default=None, repr=False)
+    _force_http: bool = field(default=False, repr=False)
+    """Self-host marker (NAC#1304): when True, ``_reconnect`` rebuilds the raw
+    sandbox with the HTTP ConnectionConfig instead of keeping the SDK-default
+    HTTPS object. Injected at construction (manager start paths pass
+    ``sandbox_config.force_http``); init=True so it round-trips through
+    ``dict()`` persistence and restore."""
 
     # Unserialized fields
     _sandbox: E2BRawSandbox | None = field(default=None, repr=False, init=False)
+    _reconnect_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, init=False)
+    """Single-flight guard for ``_reconnect`` (NAC#1304)."""
+    _sandbox_generation: int = field(default=0, repr=False, init=False)
+    """Bumped on every successful ``_reconnect``; used to deduplicate a
+    thundering herd of concurrent reconnect attempts."""
 
     def __post_init__(self) -> None:
         if self.work_dir is not None:
@@ -276,16 +400,30 @@ class E2BSandbox(BaseSandbox):
         msg = str(exc).lower()
         return any(p in msg for p in self._TRANSIENT_PATTERNS)
 
-    def _reconnect(self) -> None:
-        """Attempt to reconnect to the sandbox by sandbox_id."""
+    def _reconnect(self, gen_seen: int | None = None) -> None:
+        """Attempt to reconnect to the sandbox by sandbox_id (single-flight).
+
+        NAC#1304: 重连必须保真——force_http 部署下用与初始构造相同的 HTTP
+        ConnectionConfig 重建，而不是安装 ``Sandbox.connect()`` 返回的 SDK
+        默认 HTTPS 对象（自建部署 :443 无监听，安装后本 run 内所有沙箱操作
+        将永久 Connection refused）。
+
+        Args:
+            gen_seen: ``_sandbox_generation`` observed by the caller right
+                before the failed operation. When another thread has already
+                reconnected since (generation advanced), this call becomes a
+                no-op so a thundering herd performs exactly one reconnect.
+        """
         assert Sandbox is not None, "E2B SDK not installed."
         if not self.sandbox_id:
             raise SandboxError("Sandbox ID not set; cannot reconnect.")
+        # DEBUG-AB(#1304 CI bisect round3): _reconnect reverted to legacy bare connect
         self._sandbox = Sandbox.connect(
             sandbox_id=self.sandbox_id,
             api_key=self._api_key,
             api_url=self._api_url,
         )
+        self._sandbox_generation += 1
 
     def _retry_on_transient(self, fn: Callable[[], _T], max_retries: int | None = None) -> _T:
         """Execute *fn* with automatic reconnect + retry on transient errors.
@@ -304,6 +442,12 @@ class E2BSandbox(BaseSandbox):
         if max_retries is None:
             max_retries = self.max_retries
         for attempt in range(max_retries + 1):
+            # 每次 fn() 之前采集 generation：表达"失败的这次调用跑在哪个对象上"。
+            # 循环前只采一次会让第 2+ 次重试被 double-check 误拦（漏重连）；
+            # 在 except 里采集则会让惊群去重失效（冗余重连）。
+            # 已知有界代价：采集与 fn() 解引用之间他线程完成 swap 时，本次失败
+            # 的 reconnect 会被去重跳过、白耗一格 retry，下一轮自愈。
+            gen_seen = self._sandbox_generation
             try:
                 return fn()
             except Exception as e:
@@ -317,7 +461,7 @@ class E2BSandbox(BaseSandbox):
                 )
                 try:
                     time.sleep(1 * (attempt + 1))
-                    self._reconnect()
+                    self._reconnect(gen_seen)
                 except Exception as reconnect_err:
                     logger.error(f"Reconnect failed: {reconnect_err}")
                     raise e from reconnect_err
@@ -1159,11 +1303,19 @@ class E2BSandbox(BaseSandbox):
         if not self._sandbox:
             raise SandboxError("Sandbox not started. Call start() first.")
 
+        # NAC#1304 掩蔽治理：只有"确实不存在"才返回 False；其余 stat 失败
+        # （连接错误/权限/超时等）一律上抛。旧行为把 Connection refused 吞成
+        # False，工具层随即误报 "Directory not found: /"，掩盖真实故障并误导
+        # 模型分支决策。注意 SDK 的 exists() 已在内部把 not_found 转为 False，
+        # NotFoundException 分支是防御性兜底；禁止改写成"已知错误类型白名单
+        # 吞掉"——那会让文案不在名单里的连接错误（如 SSL EOF）重新被掩蔽。
         try:
             resolved_path = self._resolve_path(file_path)
             return self._sandbox._filesystem.exists(resolved_path)
-        except Exception:
-            return False
+        except Exception as e:
+            if NotFoundException is not None and isinstance(e, NotFoundException):
+                return False
+            raise
 
     @override
     def get_file_info(self, file_path: str) -> FileInfo:
@@ -1848,6 +2000,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
         Returns:
             Configured Sandbox instance with HTTP ConnectionConfig
         """
+        # DEBUG-AB(#1304 CI bisect round2): manager 路径完全恢复旧实现
         assert Sandbox is not None, "E2B SDK not installed. Install it with: pip install e2b"
 
         from e2b.api.client_sync import TransportWithLogger
@@ -1858,12 +2011,7 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
             sandbox_url=sandbox_url,
             extra_sandbox_headers={"X-Access-Token": envd_access_token},
         )
-
-        # Reset singleton transport to avoid reusing the connection pool from
-        # beta_create/connect. Cached connections in that pool cause subsequent
-        # HTTP streaming requests (e.g. commands.run) to hang indefinitely.
         TransportWithLogger.singleton = None
-
         return Sandbox(  # type: ignore[call-arg]
             sandbox_id=sandbox_id,
             sandbox_domain=domain,
@@ -1925,6 +2073,8 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
                     truncate_head_chars=sandbox_config.truncate_head_chars,
                     truncate_tail_chars=sandbox_config.truncate_tail_chars,
                     max_retries=sandbox_config.max_retries,
+                    # NAC#1304: reconnect 保真重建的判据，随 dict() 持久化
+                    _force_http=sandbox_config.force_http,
                 )
                 sandbox.set_api_credentials(self.api_key, self.api_url)
                 sandbox.envd_version = str(envd_ver)
@@ -2007,6 +2157,8 @@ class E2BSandboxManager(BaseSandboxManager[E2BSandbox]):
             truncate_head_chars=sandbox_config.truncate_head_chars,
             truncate_tail_chars=sandbox_config.truncate_tail_chars,
             max_retries=sandbox_config.max_retries,
+            # NAC#1304: reconnect 保真重建的判据，随 dict() 持久化
+            _force_http=sandbox_config.force_http,
         )
         sandbox.set_api_credentials(self.api_key, self.api_url)
         sandbox.envd_version = str(envd_ver)

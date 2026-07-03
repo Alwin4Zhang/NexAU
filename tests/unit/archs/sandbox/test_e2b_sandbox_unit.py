@@ -111,6 +111,8 @@ class _FakeConnectionConfig:
     def __init__(self, sandbox_url: str = "", extra_sandbox_headers: dict | None = None) -> None:
         self.sandbox_url = sandbox_url
         self.sandbox_headers = extra_sandbox_headers or {}
+        # NAC#1304: _locked_build_http_sandbox 的 pre-seed 读取 proxy
+        self.proxy = None
 
 
 class _FakeSandbox:
@@ -606,8 +608,29 @@ class TestFileOpsDefensive:
         with pytest.raises(Exception):
             sandbox.file_exists("f.txt")
 
-    def test_file_exists_exception_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fs = _FakeFilesystem(exists_error=RuntimeError("boom"))
+    def test_file_exists_raises_on_non_not_found_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NAC#1304 掩蔽治理：非 not_found 的 stat 失败必须上抛，不得吞成 False。
+
+        旧契约（异常一律 return False）会把 Connection refused 翻译成
+        "Directory not found: /"，掩盖真实故障并误导模型。
+        """
+        fs = _FakeFilesystem(exists_error=RuntimeError("connection refused"))
+        backend = _FakeSandbox(filesystem=fs)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        with pytest.raises(RuntimeError, match="connection refused"):
+            sandbox.file_exists("/missing")
+
+    def test_file_exists_false_on_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NAC#1304：NotFoundException（防御性分支）仍返回 False。
+
+        真实 SDK 的 exists() 在内部把 not_found 转为 False、不会抛
+        NotFoundException 到这里；本用例人为触发以覆盖防御分支。
+        """
+        from e2b.exceptions import NotFoundException as RealNotFound
+
+        fs = _FakeFilesystem(exists_error=RealNotFound("gone"))
         backend = _FakeSandbox(filesystem=fs)
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
@@ -844,6 +867,11 @@ class TestManagerDefensive:
         class _FakeTWL:
             singleton = object()
 
+            # NAC#1304: pre-seed 会实例化 TransportWithLogger(limits=..., proxy=...)
+            def __init__(self, limits: object = None, proxy: object = None) -> None:
+                self.limits = limits
+                self.proxy = proxy
+
         if "e2b.api" not in sys.modules:
             sys.modules["e2b.api"] = types.ModuleType("e2b.api")
         if "e2b.api.client_sync" not in sys.modules:
@@ -890,6 +918,11 @@ class TestManagerDefensive:
 
         class _FakeTWL:
             singleton = object()
+
+            # NAC#1304: pre-seed 会实例化 TransportWithLogger(limits=..., proxy=...)
+            def __init__(self, limits: object = None, proxy: object = None) -> None:
+                self.limits = limits
+                self.proxy = proxy
 
         if "e2b.api.client_sync" not in sys.modules:
             if "e2b.api" not in sys.modules:
@@ -1085,6 +1118,11 @@ class TestBuildSandboxResetsSingleton:
 
         class _FakeTWL:
             singleton = object()
+
+            # NAC#1304: pre-seed 会实例化 TransportWithLogger(limits=..., proxy=...)
+            def __init__(self, limits: object = None, proxy: object = None) -> None:
+                self.limits = limits
+                self.proxy = proxy
 
         if "e2b.api" not in sys.modules:
             sys.modules["e2b.api"] = types.ModuleType("e2b.api")
