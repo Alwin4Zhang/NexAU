@@ -169,6 +169,23 @@ TRUNCATE_TAIL_CHARS = 5_000
 E2B_DEFAULT_WORK_DIR = "/home/user"
 
 
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env var crash-safe: empty/invalid values fall back to *default*.
+
+    NAC#1312 CR: 配置默认值在 pydantic default_factory 里求值，若直接
+    ``float(os.getenv(...))``，一个被 Helm 渲染成空串的 env 会让每次
+    config 构造抛 ValueError——整个部署的沙箱全部起不来。
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; falling back to %s", name, raw, default)
+        return default
+
+
 class BaseSandboxConfig(BaseModel):
     """Base configuration shared by all sandbox types."""
 
@@ -211,8 +228,17 @@ class E2BSandboxConfig(BaseSandboxConfig):
     keepalive_interval: int = 60  # seconds, 0 to disable
     # Self-host: use HTTP instead of HTTPS for envd (E2B SDK defaults to HTTPS)
     force_http: bool = Field(default_factory=lambda: os.getenv("E2B_FORCE_HTTP", "").lower() in ("1", "true", "yes"))
-    # Max retries for transient E2B network errors (per SDK operation)
+    # Max retries for transient E2B network errors (per SDK operation).
+    # Legacy count-based budget; only governs when transient_retry_window <= 0.
     max_retries: int = 5
+    # Retry time budget (seconds) for transient E2B network errors, measured
+    # from the first failure of an operation. Sized to ride out a data-plane
+    # outage (e.g. sandbox-proxy restart): the operation stalls, retries with
+    # backoff, and succeeds once the path recovers instead of failing fast.
+    # <= 0 falls back to legacy count-based retries (max_retries).
+    # crash-safe: 非法/空 env 值回退默认而不是让整个部署的沙箱构造崩掉
+    # （Helm 模板把未设值渲染成空串是真实场景, NAC#1312 CR finding）。
+    transient_retry_window: float = Field(default_factory=lambda: _env_float("E2B_TRANSIENT_RETRY_WINDOW", 60.0))
 
 
 SandboxConfig = LocalSandboxConfig | E2BSandboxConfig

@@ -19,14 +19,28 @@ from nexau.archs.session.orm import InMemoryDatabaseEngine
 
 pytestmark = pytest.mark.skipif(not os.getenv("E2B_API_KEY"), reason="E2B_API_KEY not set, skipping E2B tests")
 
+# NAC#1304 lesson: force_http_on 的 e2e 只能在 envd 确实以纯 HTTP 暴露的
+# self-host 上跑。历史上它在 prod-e2b（原生 E2B 栈，envd 只有 https:443）
+# 上"通过"，靠的是旧 _reconnect 丢弃 force_http、装回 SDK 默认 HTTPS 对象
+# 的 bug 自愈——即假验收。修复后该假绿如实转红（http:80 不可达 → 超时）。
+# 因此要求环境用 E2B_SELFHOST_HTTP_ENVD=1 显式声明 http envd 可达，
+# 而不是仅凭 E2B_API_URL/E2B_DOMAIN 存在就推断。
 _FORCE_HTTP_MANAGER_CASES = [
     pytest.param(False, id="force_http_off"),
     pytest.param(
         True,
         id="force_http_on",
         marks=pytest.mark.skipif(
-            not (os.getenv("E2B_API_URL") and os.getenv("E2B_DOMAIN")),
-            reason="force_http e2e path requires self-host E2B_API_URL and E2B_DOMAIN",
+            not (
+                os.getenv("E2B_API_URL")
+                and os.getenv("E2B_DOMAIN")
+                and os.getenv("E2B_SELFHOST_HTTP_ENVD", "").lower() in ("1", "true", "yes")
+            ),
+            reason=(
+                "force_http e2e requires an envd reachable over plain HTTP "
+                "(http://49983-{id}.{E2B_DOMAIN}); declare with E2B_SELFHOST_HTTP_ENVD=1. "
+                "Native E2B stacks serve envd on https:443 only — see NAC#1304"
+            ),
         ),
     ),
 ]

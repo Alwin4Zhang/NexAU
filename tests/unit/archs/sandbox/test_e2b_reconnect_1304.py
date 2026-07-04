@@ -125,9 +125,8 @@ class TestSdkCharacterization:
 class TestLockedBuild:
     def test_locked_build_preseeds_and_detaches(self) -> None:
         sb = _locked_build_http_sandbox(SID, DOMAIN, "tok", Version("0.2.0"))
-        # DEBUG-AB(#1304 CI bisect): detach disabled, singleton keeps fresh
-        assert TransportWithLogger.singleton is sb._transport
-        TransportWithLogger.singleton = None
+        # detach: the new object's transport is privatized
+        assert TransportWithLogger.singleton is None
         assert sb._transport is not None
         assert sb.envd_api_url == f"http://49983-{SID}.{DOMAIN}"
         # a later caller gets a NEW transport — never feeds connections into
@@ -137,7 +136,6 @@ class TestLockedBuild:
         assert sb.connection_config.sandbox_headers.get("X-Access-Token") == "tok"
 
 
-@pytest.mark.skip(reason="DEBUG-AB #1304 CI bisect round3: _reconnect temporarily legacy")
 class TestReconnectFidelity:
     def test_reconnect_rebuilds_http_when_force_http(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _mock_connect(monkeypatch, [_connect_response()])
@@ -191,7 +189,6 @@ class TestReconnectFidelity:
         assert wrapper._sandbox.connection_config.sandbox_headers.get("X-Access-Token") == "old-tok"
 
 
-@pytest.mark.skip(reason="DEBUG-AB #1304 CI bisect round3: _reconnect temporarily legacy")
 class TestReconnectConcurrency:
     def test_concurrent_reconnect_single_flight(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A thundering herd sharing one gen_seen performs exactly one reconnect."""
@@ -264,3 +261,58 @@ class TestForceHttpPersistence:
 
     def test_force_http_defaults_false(self) -> None:
         assert E2BSandbox(sandbox_id=SID)._force_http is False
+
+
+class TestStaticReconnect:
+    """NAC#1312 CR: explicit-target 直绑路径的原位静态重建。
+
+    连接参数是构造时显式给定的静态事实——reconnect 绝不回访控制面
+    ``Sandbox.connect()``（会引入 SDK 默认域兜底与带外沙箱 NotFound
+    两类回归），直接用当前对象自带的 domain/token 重建。
+    """
+
+    def test_static_reconnect_never_calls_connect(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = _mock_connect(monkeypatch, [_connect_response()])
+        wrapper = E2BSandbox(sandbox_id=SID, _force_http=True, _static_reconnect=True)
+        wrapper.set_api_credentials("test-key", "http://sandbox-manager:8008")
+        old = _locked_build_http_sandbox(SID, DOMAIN, "static-tok", Version("0.2.0"))
+        wrapper.__dict__["_sandbox"] = old
+
+        wrapper._reconnect()
+
+        assert not calls, "static reconnect 不得触碰控制面 Sandbox.connect()"
+        assert wrapper._sandbox is not None
+        assert wrapper._sandbox is not old
+        assert wrapper._sandbox.envd_api_url == f"http://49983-{SID}.{DOMAIN}"
+        assert wrapper._sandbox.connection_config.sandbox_headers.get("X-Access-Token") == "static-tok"
+        assert wrapper._sandbox_generation == 1
+
+    def test_static_reconnect_fail_closed_without_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """无现存对象时 fail-closed（绝不退回 connect 路径静默兜底）。"""
+        calls = _mock_connect(monkeypatch, [_connect_response()])
+        wrapper = E2BSandbox(sandbox_id=SID, _force_http=True, _static_reconnect=True)
+        wrapper.set_api_credentials("test-key", "http://sandbox-manager:8008")
+
+        with pytest.raises(SandboxError, match="Static reconnect requires an existing sandbox"):
+            wrapper._reconnect()
+        assert not calls
+        assert wrapper._sandbox_generation == 0
+
+    def test_static_reconnect_fail_closed_missing_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = _mock_connect(monkeypatch, [_connect_response()])
+        wrapper = E2BSandbox(sandbox_id=SID, _force_http=True, _static_reconnect=True)
+        wrapper.set_api_credentials("test-key", "http://sandbox-manager:8008")
+        old = SimpleNamespace(sandbox_id=SID, sandbox_domain=DOMAIN, _envd_access_token=None, _envd_version=Version("0.2.0"))
+        wrapper.__dict__["_sandbox"] = old
+
+        with pytest.raises(SandboxError, match="Static reconnect requires sandbox domain and envd access token"):
+            wrapper._reconnect()
+        assert not calls
+        assert wrapper._sandbox is old
+
+    def test_static_reconnect_round_trips_through_dict(self) -> None:
+        wrapper = E2BSandbox(sandbox_id=SID, _static_reconnect=True)
+        state = wrapper.dict()
+        assert state.get("_static_reconnect") is True
+        restored = E2BSandbox(**extract_dataclass_init_kwargs(E2BSandbox, state))
+        assert restored._static_reconnect is True

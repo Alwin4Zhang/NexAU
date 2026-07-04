@@ -47,12 +47,33 @@ class _FakeCommandResult:
 
 
 class _FakeCommands:
-    def __init__(self, behavior: Sequence[Exception | _FakeCommandResult] | None = None):
+    """Fake for sandbox.commands.
+
+    NAC#1312 后 execute_shell 前台统一走"后台启动+轮询"：状态轮询命令
+    （status_cmd）由 ``status_reply`` 智能应答且**不消耗** behavior 序列，
+    使既有测试的 behavior 序列继续表达"业务命令的失败/成功剧本"。
+    """
+
+    def __init__(
+        self,
+        behavior: Sequence[Exception | _FakeCommandResult] | None = None,
+        status_reply: str | Sequence[str | Exception] = "DONE",
+    ):
         self.behavior: list[Exception | _FakeCommandResult] = list(behavior or [])
         self.calls: list[tuple[str, dict]] = []
+        # str = 恒定应答；序列 = 逐次剧本（Exception 抛出），耗尽后重复最后一项
+        self.status_script: list[str | Exception] | None = list(status_reply) if not isinstance(status_reply, str) else None
+        self.status_reply = status_reply if isinstance(status_reply, str) else "DONE"
 
     def run(self, cmd: str, **kwargs: object) -> _FakeCommandResult:
         self.calls.append((cmd, kwargs))
+        if "exitcode.txt" in cmd and "echo DONE" in cmd:
+            if self.status_script is not None:
+                step = self.status_script.pop(0) if len(self.status_script) > 1 else self.status_script[0]
+                if isinstance(step, Exception):
+                    raise step
+                return _FakeCommandResult(stdout=step, stderr="", exit_code=0)
+            return _FakeCommandResult(stdout=self.status_reply, stderr="", exit_code=0)
         if self.behavior:
             action = self.behavior.pop(0)
             if isinstance(action, Exception):
@@ -74,14 +95,29 @@ class _FakeEntry:
 
 
 class _FakeFilesystem:
-    def __init__(self, read_content: bytes = b"", exists_error: Exception | None = None):
+    def __init__(
+        self,
+        read_content: bytes = b"",
+        exists_error: Exception | None = None,
+        files: dict[str, bytes | Exception] | None = None,
+    ):
         self.read_content = read_content
         self.exists_error = exists_error
+        self.files = dict(files or {})
         self.written: list[tuple[str, bytes | str]] = []
         self.removed: list[str] = []
         self.get_info_entry: _FakeEntry | None = None
+        self.get_info_error: Exception | None = None
 
     def read(self, path: str, format: str = "bytes") -> bytes:
+        # path-aware 优先（exitcode/pid 等控制文件），其余回落 read_content
+        for suffix, data in self.files.items():
+            if path.endswith(suffix):
+                if isinstance(data, Exception):
+                    raise data
+                return data
+        if path.endswith("exitcode.txt"):
+            return b"0"  # 默认剧本：命令成功
         return self.read_content
 
     def write(self, path: str, content: bytes | str, **kw: object) -> None:
@@ -99,6 +135,8 @@ class _FakeFilesystem:
         return True
 
     def get_info(self, path: str) -> _FakeEntry:
+        if self.get_info_error is not None:
+            raise self.get_info_error
         if self.get_info_entry is None:
             raise RuntimeError("Missing entry info")
         return self.get_info_entry
@@ -377,34 +415,51 @@ class TestExecuteShellDefensive:
         assert "recovered" in result.stdout
         assert cls.connect_called
 
-    def test_command_exit_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        commands = _FakeCommands(
-            behavior=[
-                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # _prepare_output_dir mkdir
-                _FakeCommandExitError("out", "err", 2),
-            ]
-        )
-        backend = _FakeSandbox(commands=commands)
+    def test_nonzero_exit_code_from_exitcode_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NAC#1312 统一路径后 exit code 从沙箱内 exitcode.txt 读取。"""
+        fs = _FakeFilesystem(files={"exitcode.txt": b"2"})
+        backend = _FakeSandbox(filesystem=fs)
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
         _attach_backend(sandbox, backend)
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _: None)
         result = sandbox.execute_shell("false")
         assert result.status == SandboxStatus.ERROR
         assert result.exit_code == 2
 
-    def test_timeout_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        commands = _FakeCommands(
-            behavior=[
-                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # _prepare_output_dir mkdir
-                _FakeTimeoutError(),
-            ]
-        )
-        backend = _FakeSandbox(commands=commands)
+    def test_timeout_via_poll_deadline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """轮询打满 timeout 且 exitcode 不存在 → TIMEOUT（统一路径语义）。
+
+        用假时钟（monotonic 读计数、sleep 推进）驱动本地 poll deadline，
+        不真实睡眠（CR finding：真实睡眠的超时测试既慢又受载荷抖动影响）。
+        """
+        commands = _FakeCommands(status_reply="RUNNING")
+        fs = _FakeFilesystem(files={"exitcode.txt": FileNotFoundError("no exitcode yet")})
+        backend = _FakeSandbox(commands=commands, filesystem=fs)
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
         _attach_backend(sandbox, backend)
+        clock = {"t": 0.0}
+        monkeypatch.setattr(e2b_module.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
         result = sandbox.execute_shell("sleep 999", timeout=1000)
         assert result.status == SandboxStatus.TIMEOUT
+        # 超时清理路径向沙箱发了 kill
+        assert any("kill -TERM" in c for c, _ in commands.calls)
+
+    def test_server_side_timeout_wrap_and_124_mapping(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """启动脚本必须带 GNU timeout 服务端强制（防孤儿进程树）；
+        exitcode=124 映射回 TIMEOUT。"""
+        fs = _FakeFilesystem(files={"exitcode.txt": b"124"})
+        backend = _FakeSandbox(filesystem=fs)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _s: None)
+        result = sandbox.execute_shell("sleep 999", timeout=30000)
+        assert result.status == SandboxStatus.TIMEOUT
+        launch_cmd = backend.commands.calls[1][0]
+        assert "timeout -k 10 30 bash -c" in launch_cmd, launch_cmd
 
     def test_generic_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
         commands = _FakeCommands(
@@ -613,12 +668,16 @@ class TestFileOpsDefensive:
 
         旧契约（异常一律 return False）会把 Connection refused 翻译成
         "Directory not found: /"，掩盖真实故障并误导模型。
+        NAC#1312 后 transient 错误会先走重试窗口；本用例关窗口（退回次数制）
+        并 mock sleep，验证预算耗尽后仍如实上抛。
         """
         fs = _FakeFilesystem(exists_error=RuntimeError("connection refused"))
         backend = _FakeSandbox(filesystem=fs)
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
+        sandbox.transient_retry_window = 0.0
         _attach_backend(sandbox, backend)
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _s: None)
         with pytest.raises(RuntimeError, match="connection refused"):
             sandbox.file_exists("/missing")
 
@@ -643,10 +702,26 @@ class TestFileOpsDefensive:
         with pytest.raises(Exception):
             sandbox.get_file_info("f.txt")
 
-    def test_get_file_info_get_info_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """get_info raises → returns FileInfo(exists=False)."""
+    def test_get_file_info_raises_on_non_not_found_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NAC#1312 掩蔽治理（同 file_exists 口径）：get_info 的非 NotFound
+        失败必须上抛，不得吞成 exists=False——旧契约会把连接错误报成
+        "文件不存在" 误导调用方。"""
         fs = _FakeFilesystem()
-        fs.get_info_entry = None  # will raise RuntimeError
+        fs.get_info_entry = None  # will raise RuntimeError("Missing entry info")
+        backend = _FakeSandbox(filesystem=fs)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        # 外层统一把异常包装为 SandboxFileError——关键是"上抛"而非吞成 exists=False
+        with pytest.raises(SandboxFileError, match="Missing entry info"):
+            sandbox.get_file_info("/some/file")
+
+    def test_get_file_info_false_on_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NAC#1312：get_info 抛 NotFoundException → FileInfo(exists=False)。"""
+        from e2b.exceptions import NotFoundException as RealNotFound
+
+        fs = _FakeFilesystem()
+        fs.get_info_error = RealNotFound("gone")
         backend = _FakeSandbox(filesystem=fs)
         _enable_fake_e2b(monkeypatch, backend)
         sandbox = E2BSandbox(sandbox_id="sbx")
@@ -1136,3 +1211,135 @@ class TestBuildSandboxResetsSingleton:
         assert _FakeTWL.singleton is not None
         manager._build_sandbox_with_connection_config("sbx", "example.com", "token", Version("0.1.4"))
         assert _FakeTWL.singleton is None
+
+
+# =============================================================================
+# NAC#1312: 瞬断重试补伞 — execute_shell 级集成用例
+# =============================================================================
+
+
+class TestRetryUmbrella1312:
+    """断连期间曾毫秒级快速失败的裸调点，现必须走瞬断重试。"""
+
+    def test_prepare_output_dir_retries_transient_mkdir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """mkdir（主命令前的准备步骤）碰到瞬断：重试后整条 execute_shell 成功。
+
+        NAC#1312 之前它是裸调，第一个 connection refused 就把 execute_shell
+        整个打死——根本轮不到主命令的重试。
+        """
+        commands = _FakeCommands(
+            behavior=[
+                RuntimeError("connection refused"),  # _prepare_output_dir mkdir 第一次瞬断
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # mkdir 重试成功
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # 后台启动
+            ]
+        )
+        filesystem = _FakeFilesystem(read_content=b"recovered")
+        backend = _FakeSandbox(commands=commands, filesystem=filesystem)
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _s: None)
+
+        result = sandbox.execute_shell("echo hi")
+
+        assert result.status == SandboxStatus.SUCCESS
+        assert "recovered" in result.stdout
+        assert cls.connect_called  # 瞬断触发了 reconnect
+
+    def test_foreground_launch_idempotent_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """前台命令统一走后台启动（NAC#1312 CR 彻底修）：启动脚本必须带
+        pid 文件守卫——瞬断重试时若上一次启动实际已生效（响应丢失），
+        守卫防止非幂等命令被双跑。"""
+        filesystem = _FakeFilesystem(
+            files={
+                "exitcode.txt": b"0",
+                "stdout.txt": b"long done",
+                "stderr.txt": b"",
+            }
+        )
+        backend = _FakeSandbox(filesystem=filesystem)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _s: None)
+
+        result = sandbox.execute_shell("sleep 1", timeout=700_000)
+
+        assert result.status == SandboxStatus.SUCCESS
+        assert result.exit_code == 0
+        assert "long done" in result.stdout
+        launch_cmd = backend.commands.calls[1][0]
+        assert "if [ ! -s" in launch_cmd and "pid.txt" in launch_cmd, f"后台启动脚本缺 pid 守卫,瞬断重试会双跑命令: {launch_cmd!r}"
+
+    def test_launch_transient_does_not_double_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """启动调用撞瞬断后的重试仍然带守卫——发到沙箱的每一次启动脚本
+        都是幂等形态，绝无裸 wrapped_cmd 重跑。"""
+        commands = _FakeCommands(
+            behavior=[
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # mkdir
+                RuntimeError("connection reset"),  # 启动第一次瞬断（可能已生效）
+                _FakeCommandResult(stdout="", stderr="", exit_code=0),  # 启动重试
+            ]
+        )
+        backend = _FakeSandbox(commands=commands, filesystem=_FakeFilesystem(files={"stdout.txt": b"ok"}))
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _s: None)
+
+        result = sandbox.execute_shell("echo x >> /data/out.txt")
+
+        assert result.status == SandboxStatus.SUCCESS
+        launch_calls = [c for c, _ in backend.commands.calls if "pid.txt" in c and "if [ ! -s" in c]
+        assert len(launch_calls) == 2, "启动重试也必须是守卫形态"
+        bare_runs = [c for c, _ in backend.commands.calls if ">> /data/out.txt" in c and "if [ ! -s" not in c]
+        assert not bare_runs, f"出现了无守卫的命令重跑: {bare_runs!r}"
+
+    def test_poll_failures_trigger_reconnect_then_recover(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """轮询容错契约（CR finding：fake 智能应答曾让该路径零覆盖）：
+        断连期间 poll 连续失败 → 触发保真 _reconnect → 恢复后拿到 DONE。"""
+        commands = _FakeCommands(
+            status_reply=[
+                RuntimeError("connection refused"),
+                RuntimeError("connection refused"),
+                RuntimeError("connection refused"),
+                "DONE",
+            ]
+        )
+        fs = _FakeFilesystem(files={"stdout.txt": b"survived", "exitcode.txt": b"0"})
+        backend = _FakeSandbox(commands=commands, filesystem=fs)
+        cls = _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _s: None)
+
+        result = sandbox.execute_shell("echo hi")
+
+        assert result.status == SandboxStatus.SUCCESS
+        assert "survived" in result.stdout
+        assert cls.connect_called, "轮询连续失败必须触发保真 reconnect（token 轮换/对象陈旧类故障无法靠连接池自愈）"
+
+    def test_output_unavailable_reports_note_not_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """输出不可用是独立维度：命令 exit 0 时 status 保持 SUCCESS（防
+        agent 重跑非幂等命令），error 字段显性注明输出不可用。"""
+        fs = _FakeFilesystem(
+            files={
+                "exitcode.txt": b"0",
+                "stdout.txt": RuntimeError("connection refused"),
+                "stderr.txt": b"partial-err",
+            }
+        )
+        backend = _FakeSandbox(filesystem=fs)
+        _enable_fake_e2b(monkeypatch, backend)
+        sandbox = E2BSandbox(sandbox_id="sbx")
+        sandbox.transient_retry_window = 0.05  # 快速耗尽读取预算
+        _attach_backend(sandbox, backend)
+        monkeypatch.setattr(e2b_module.time, "sleep", lambda _s: None)
+
+        result = sandbox.execute_shell("echo hi")
+
+        assert result.status == SandboxStatus.SUCCESS, "输出读取失败不得改写命令成败结论"
+        assert result.exit_code == 0
+        assert "output unavailable" in (result.error or "")
+        assert "partial-err" in result.stderr, "读到的部分不得因另一文件失败而丢弃"
