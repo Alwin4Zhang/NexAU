@@ -2139,12 +2139,8 @@ class TestAnthropicCacheControlBreakpointClamp:
         """Six cacheable system blocks + a user block must not exceed four breakpoints."""
         from nexau.archs.main_sub.execution.llm_caller import _apply_anthropic_cache_control
 
-        system_messages: list[dict[str, object]] = [
-            {"type": "text", "text": f"block {i}", "_cache": True} for i in range(6)
-        ]
-        user_messages: list[dict[str, object]] = [
-            {"role": "user", "content": [{"type": "text", "text": "hello"}]}
-        ]
+        system_messages: list[dict[str, object]] = [{"type": "text", "text": f"block {i}", "_cache": True} for i in range(6)]
+        user_messages: list[dict[str, object]] = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
 
         _apply_anthropic_cache_control(system_messages, user_messages, self._ephemeral)
 
@@ -2170,9 +2166,7 @@ class TestAnthropicCacheControlBreakpointClamp:
             {"type": "text", "text": "static", "_cache": True},
             {"type": "text", "text": "dynamic", "_cache": False},
         ]
-        user_messages: list[dict[str, object]] = [
-            {"role": "user", "content": [{"type": "text", "text": "hello"}]}
-        ]
+        user_messages: list[dict[str, object]] = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
 
         _apply_anthropic_cache_control(system_messages, user_messages, self._ephemeral)
 
@@ -2186,12 +2180,8 @@ class TestAnthropicCacheControlBreakpointClamp:
         """Four cacheable system blocks exhaust the budget before the user block."""
         from nexau.archs.main_sub.execution.llm_caller import _apply_anthropic_cache_control
 
-        system_messages: list[dict[str, object]] = [
-            {"type": "text", "text": f"block {i}", "_cache": True} for i in range(4)
-        ]
-        user_messages: list[dict[str, object]] = [
-            {"role": "user", "content": [{"type": "text", "text": "hello"}]}
-        ]
+        system_messages: list[dict[str, object]] = [{"type": "text", "text": f"block {i}", "_cache": True} for i in range(4)]
+        user_messages: list[dict[str, object]] = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
 
         _apply_anthropic_cache_control(system_messages, user_messages, self._ephemeral)
 
